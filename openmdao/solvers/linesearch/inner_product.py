@@ -15,7 +15,6 @@ in Engineering 14 (11): 1613–26.
 """
 
 import numpy as np
-from scipy.optimize import root_scalar
 
 from openmdao.core.analysis_error import AnalysisError
 from openmdao.solvers.solver import NonlinearSolver
@@ -183,15 +182,11 @@ class LinesearchSolver(NonlinearSolver):
             _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
         elif method == "scalar":
             _enforce_bounds_scalar(system._outputs, step, alpha, lower, upper)
-        elif method == "wall":
-            _enforce_bounds_wall(system._outputs, step, alpha, lower, upper)
 
 
 class InnerProductLS(LinesearchSolver):
     """
-    Bracketing and pinpointing linesearch whith several root
-    finding methods available.  Default is the Illinois method with
-    others available through SciPy.
+    Inner product linesearch
 
     Attributes
     ----------
@@ -214,7 +209,7 @@ class InnerProductLS(LinesearchSolver):
 
         self._analysis_error_raised = False
 
-    def _iter_initialize(self):
+    def _iter_initialize(self, u, du):
         """
         Perform any necessary pre-processing operations.
 
@@ -225,32 +220,32 @@ class InnerProductLS(LinesearchSolver):
         float
             error at the first iteration.
         """
+        self.SOLVER = "LS: IP BRKT"
         system = self._system()
         self.s_b = 0.0
         self.s_a = self.options["s_a"]
 
-        u = system._outputs
-        du = system._vectors["output"]["linear"]
-
         self._run_apply()
+
+        # Store the initial residual norm for recording
+        self._phi0 = self._iter_get_norm()
 
         # The lower bracket value is the inner product of the newton
         # step and the residuals vector
-        self.g_0 = self.g_b = np.inner(du, system._vectors["residual"]["linear"])
+        self.g_0 = self.g_b = np.inner(du.asarray(), system._residuals.asarray())
 
         # Initial step length based on the upper bracket step length
         u.add_scal_vec(self.s_a, du)
 
-        # TODO: Figure out bounds enforcement
-
         # The bounds are enforced at the upper bracket step length
-        # self._enforce_bounds(step=du, alpha=self.s_a)
+        self._enforce_bounds(step=du, alpha=self.s_a)
 
         try:
             cache = self._solver_info.save_cache()
 
             self._run_apply()
-            self.g_a = np.inner(du, system._vectors["residual"]["linear"])
+            self.g_a = np.inner(du.asarray(), system._residuals.asarray())
+            phi = self._iter_get_norm()
 
         except AnalysisError as err:
             self._solver_info.restore_cache(cache)
@@ -260,7 +255,12 @@ class InnerProductLS(LinesearchSolver):
             else:
                 raise err
 
-            self.g_a = np.nan
+            phi = np.nan
+            self.g_a = self.g_b * 2.0
+
+        self._mpi_print(self._iter_count, phi, self.s_a)
+
+        return phi
 
     def _declare_options(self):
         """
@@ -268,19 +268,19 @@ class InnerProductLS(LinesearchSolver):
         """
         super()._declare_options()
         opt = self.options
-        opt["maxiter"] = 10
-        opt.declare("s_max", default=16, desc="Largest allowable bracketing step")
+        opt.declare("gamma", default=2.0, desc="Bracketing expansion factor")
+        opt.declare("rho", default=0.5, desc="Root finding contraction factor")
+        opt.declare("s_max", default=16.0, desc="Largest allowable bracketing step")
         opt.declare("s_a", default=1.0, desc="Initial upper bracket step")
         opt.declare("stol", default=0.5, desc="Root finding tolerance for the Illinois algorithm")
-        opt.declare("atol", default=1e-6, desc="Absolute error tolerance for scipy root_scalar methods")
-        opt.declare("rtol", default=1e-6, desc="Relative error tolerance for scipy root_scalar methods")
+        opt.declare("maxiter_bracketing", default=10, desc="Maximum bracketing iterations")
+        opt.declare("maxiter_rootfinder", default=10, desc="Maximum root finding iterations")
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
-        opt.declare(
-            "method",
-            defualt="illinois",
-            values=["illinois", "secant", "brentq", "brenth", "toms748", "ridder"],
-            desc="Root finding method for the pinointing phase of the linesearch",
-        )
+
+        # Remove unused options from base options here, so that users
+        # attempting to set them will get KeyErrors.
+        for unused_option in ("rtol", "maxiter", "err_on_non_converge"):
+            opt.undeclare(unused_option)
 
     def _single_iteration(self):
         """
@@ -312,146 +312,203 @@ class InnerProductLS(LinesearchSolver):
         else:
             self._run_apply()
 
-    def _bracketing(self, u, du):
-        system = self._system
-        du = system._vectors["output"]["linear"]
+    def _bracketing(self, u, du, phi, rec):
+        """Bracketing phase of the linesearch
+
+        Parameters
+        ----------
+        u : <vecotor>
+            State Vector
+        du : <vector>
+            Newton step
+        phi : float
+            Residual norm at current points
+        rec : OpenMDAO recorder
+            The recorder for this linesearch
+
+        Returns
+        -------
+        tuple(float, float)
+            A tuple containing the step found by bracketing and the
+            inner product of the Newton step and the residual vectors
+            at that step.
+        """
+        self.SOLVER = "LS: IP BRKT"
+        system = self._system()
         options = self.options
         s_max = options["s_max"]
+        gamma = options["gamma"]
+        maxiter = options["maxiter_bracketing"]
+        restoration = False
 
-        while np.sign(self.g_a) * np.sign(self.g_b) > 0 and self.s_a < s_max and not self._analysis_error_raised:
+        while (
+            self.s_a < s_max
+            and self._iter_count < maxiter
+            and (np.sign(self.g_a) * np.sign(self.g_b) > 0 or self._analysis_error_raised)
+        ):
 
-            cache = self._solver_info.save_cache()
+            if self._analysis_error_raised and self._iter_count > 0:
+                restoration = True
 
-            try:
+                self.s_a *= 0.5
+
+                s_rel = self.s_a - self.s_b
+
+                # Move the relative step between the new step and previous step
+                u.add_scal_vec(s_rel, du)
+
+            else:
                 # Move the lower bracket step and value
                 self.s_b = self.s_a
                 self.g_b = self.g_a
 
                 # Update the upper bracket step
-                self.s_a = 2 * self.s_a
+                self.s_a = gamma * self.s_a
 
-                # TODO: Figure out bounds enforcement
+                s_rel = self.s_a - self.s_b
 
-                # Enforce bounds after upper bracket expands
-                # self._enforce_bounds(step=du, alpha=self.s_a)
+                # Move the relative step between the new step and previous step
+                u.add_scal_vec(s_rel, du)
+
+                self._enforce_bounds(step=du, alpha=self.s_a)
+
+            cache = self._solver_info.save_cache()
+
+            try:
+
+                self._single_iteration()
+
+                self._iter_count += 1
 
                 # Compute the new upper bracket value
-                self.g_a = self._line_search_objective(self.s_a, u, du)
+                self.g_a = np.inner(du.asarray(), system._residuals.asarray())
 
-                # Set the current step and value to the upper bracket value
-                alpha = self.s_a
-                g = self.g_a
+                phi = self._iter_get_norm()
+                rec.abs = phi
+                rec.rel = phi / self._phi0
 
             except AnalysisError as err:
                 self._solver_info.restore_cache(cache)
+                self._iter_count += 1
 
                 if self.options["retry_on_analysis_error"]:
                     self._analysis_error_raised = True
+                    rec.abs = np.nan
+                    rec.rel = np.nan
 
                 else:
                     raise err
 
+            self._mpi_print(self._iter_count, phi, self.s_a)
+
+            # If we find a successful step in restoration mode,
+            # exit the bracketing loop
+            if restoration and not self._analysis_error_raised:
+                break
+
+        # Set the current step and value to the upper bracket value
+        alpha = self.s_a
+        g = self.g_a
+
         return alpha, g
 
-    def _illinois(self, alpha, g, u, du):
-        """
-        Illinois root finding algorithm
+    def _illinois(self, alpha, g, u, du, rec):
+        """Illinois root finding algorithm
+
+        Parameters
+        ----------
+        alpha : float
+            Step from the bracketing algorithm
+        g : float
+            Inner product at step alpha from the bracketing algorithm
+        u : <vector>
+            State vector
+        du : <vector>
+            Newton step
+        rec : OpenMDAO recorder
+            The recorder for the linesearch
 
         Reference
         ---------
-        G. Dahlquist and 8. Bjorck, Numerical Methods, Prentice-Hall, Englewood Cliffs, N.J., 1974.
+        G. Dahlquist and 8. Bjorck, Numerical Methods, Prentice-Hall,
+        Englewood Cliffs, N.J., 1974.
         """
-
+        self.SOLVER = "LS: IP PNPT"
+        system = self._system()
         options = self.options
-        maxiter = options["maxiter"]
+        maxiter = options["maxiter_rootfinder"]
         stol = options["stol"]
+        rho = options["rho"]
 
         while (
             np.sign(self.g_a) * np.sign(self.g_b) < 0
             and self._iter_count < maxiter
             and (abs(g) > stol * abs(self.g_0) or abs(self.s_b - self.s_a) > stol * 0.5 * (self.s_b + self.s_a))
         ):
-            alpha = self.s_a - self.g_a * (self.s_a - self.s_b) / (self.g_a - self.g_b)
 
-            g = self._line_search_objective(alpha, u, du)
+            # Interpolate a new guess for alpha based on the bracket
+            alpha = self.s_a - self.g_a * ((self.s_a - self.s_b) / (self.g_a - self.g_b))
 
+            # Update the state vector using a relative step between
+            # alpha and the upper bracket.
+            u.add_scal_vec(alpha - self.s_a, du)
+
+            # Evaluate the residuals
+            self._single_iteration()
             self._iter_count += 1
 
+            g = np.inner(du.asarray(), system._residuals.asarray())
+
+            phi = self._iter_get_norm()
+            rec.abs = phi
+            rec.rel = phi / self._phi0
+
             if np.sign(g) * np.sign(self.g_a) > 0:
-                self.g_b = 0.5 * self.g_b
+                self.g_b = rho * self.g_b
 
             else:
                 self.s_b = self.s_a
                 self.g_b = self.g_a
+
             self.s_a = alpha
             self.g_a = g
 
-        return alpha
-
-    def _line_search_objective(self, alpha, u, du):
-        # Update the state vector
-        u.add_scal_vec(-alpha, du)
-
-        # Evaluate the residuals
-        self._single_iteration()
-
-        # Return the inner product of the Newton step and the residuals
-        return np.inner(du, self._system._vectors["residual"]["linear"])
+            self._mpi_print(self._iter_count, phi, alpha)
 
     def _solve(self):
         """
         Run the iterative solver.
         """
         options = self.options
-        maxiter = options["maxiter"]
         atol = options["atol"]
-        rtol = options["rtol"]
-        method = options["method"]
 
-        system = self._system
+        system = self._system()
         u = system._outputs
         du = system._vectors["output"]["linear"]
 
         self._iter_count = 0
 
-        self._iter_initialize()  # Initialize the line search
+        phi = self._iter_initialize(u, du)  # Initialize the line search
 
-        # TODO: Record the abs and rel residual norms
-        with Recording("InnerProductLS", self._iter_count, self) as rec:
+        with Recording("InnerProductLS", self._iter_count, self) as rec:  # NOQA
 
             # Find the interval that brackets the root.  Analysis errors
             # are caught within the bracketing phase and bounds are enforced
             # at the upper step of the bracket.  If the bracketing phase
             # exits without error, we should be able to find a step length
-            # which drives the inner product to zero.
-            alpha, g = self._bracketing(u, du)
+            # within the bracket which drives the inner product to zero.
+            alpha, g = self._bracketing(u, du, phi, rec)
 
-            self._mpi_print(self._iter_count, self._iter_get_norm(), alpha)
-
-            # Find the zero of the inner product between the Newton step
-            # and residual vectors within the bracketing interval
-            # using declared method.
-            if method == "illinois":
-                alpha = self._illinois(alpha, g, u, du)
-            elif method in ["secant", "brentq", "brenth", "toms748", "ridder"]:
-                res = root_scalar(
-                    self._line_search_objective,
-                    args=(u, du),
-                    method=method,
-                    bracket=[self.s_b, self.s_a],
-                    x0=self.s_a,
-                    x1=self.s_b,
-                    xtol=atol,
-                    rtol=rtol,
-                    maxiter=maxiter,
-                )
-                alpha = res.root
-                if not res.converged:
-                    raise Warning(f"Root finding method {method} failed to converge in {res.iterations} iterations.")
-            else:
-                raise AnalysisError("Invalid root solver option declared for InnerBracketLS")
-
-            self._mpi_print(self._iter_count, self._iter_get_norm(), alpha)
+            # The upper bracket step is the largest step we can take
+            # within the bounds.  If the iter norm is less than the
+            # requested absolute tolerance, we skip the root finding
+            # and take the full upper bracket step.
+            if not self._iter_get_norm() < atol:
+                # Find the zero of the inner product between the Newton step
+                # and residual vectors within the bracketing interval
+                # using the Illinois algorithm.
+                self._iter_count = 0
+                self._illinois(alpha, g, u, du, rec)
 
 
 def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
@@ -514,7 +571,7 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
 
         # At this point, we normalize d_alpha by alpha to figure out the relative
         # amount that the du vector has to be reduced, then apply the reduction.
-        du *= 1 - d_alpha / alpha
+        du *= d_alpha / alpha
 
 
 def _enforce_bounds_scalar(u, du, alpha, lower_bounds, upper_bounds):
@@ -558,55 +615,4 @@ def _enforce_bounds_scalar(u, du, alpha, lower_bounds, upper_bounds):
 
     change = change_lower + change_upper
     u_data += change
-    du += change / alpha
-
-
-def _enforce_bounds_wall(u, du, alpha, lower_bounds, upper_bounds):
-    """
-    Enforce lower/upper bounds on each scalar separately, then backtrack along the wall.
-
-    This method modifies both self (u) and step (du) in-place.
-
-    Parameters
-    ----------
-    u :<Vector>
-        Output vector.
-    du : <Vector>
-        Newton step; the backtracking is applied to this vector in-place.
-    alpha : float
-        step size.
-    lower_bounds : ndarray
-        Lower bounds array.
-    upper_bounds : ndarray
-        Upper bounds array.
-    """
-    # The assumption is that alpha * step has been added to this vector
-    # just prior to this method being called. We are currently in the
-    # initialization of a line search, and we're trying to ensure that
-    # the initial step does not violate bounds. If it does, we modify
-    # the step vector directly.
-
-    # enforce bounds on step in-place.
-    u_data = u.asarray()
-    du_data = du.asarray()
-
-    # If u > lower, we're just adding zero. Otherwise, we're adding
-    # the step required to get up to the lower bound.
-    # For du, we normalize by alpha since du eventually gets
-    # multiplied by alpha.
-    change_lower = 0.0 if lower_bounds is None else np.maximum(u_data, lower_bounds) - u_data
-
-    # If u < upper, we're just adding zero. Otherwise, we're adding
-    # the step required to get down to the upper bound, but normalized
-    # by alpha since du eventually gets multiplied by alpha.
-    change_upper = 0.0 if upper_bounds is None else np.minimum(u_data, upper_bounds) - u_data
-
-    change = change_lower + change_upper
-
-    u_data += change
-    du_data += change / alpha
-
-    # Now we ensure that we will backtrack along the wall during the
-    # line search by setting the entries of du at the bounds to zero.
-    changed_either = change.astype(bool)
-    du_data[changed_either] = 0.0
+    du -= change / alpha

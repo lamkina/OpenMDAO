@@ -412,6 +412,74 @@ class InnerProductLS(LinesearchSolver):
 
         return alpha, g
 
+    def _inv_quad_interp(self, g_c, s_c):
+        s = (
+            ((self.s_a * self.g_b * g_c) / ((self.g_a - self.g_b) * (self.g_a - g_c)))
+            + ((self.s_b * self.g_a * g_c) / ((self.g_b - self.g_a) * (self.g_b - g_c)))
+            + ((s_c * self.g_a * self.g_b) / ((g_c - self.g_a) * (g_c - self.g_b)))
+        )
+
+        return s
+
+    def _brentq(self, alpha, g, u, du, rec):
+        system = self._system()
+        options = self.options
+        maxiter = options["maxiter_rootfinder"]
+        atol = options["atol"]
+
+        # Exit if there is no bracket
+        if np.sign(self.g_a) * np.sign(self.g_b) >= 0:
+            return
+
+        # Swap bracket
+        if abs(self.g_a) < abs(self.g_b):
+            self.s_a, self.s_b, self.g_a, self.g_b = self.s_b, self.s_a, self.g_b, self.g_a
+
+        s_c, g_c = self.s_a, self.g_a
+        flag = True
+
+        while self.g_b != 0.0 and self.g_k != 0.0 and self._iter_count < maxiter and abs(self.s_b - self.s_a) > 1e-4:
+            if self.g_a != g_c and self.g_b != g_c:
+                s_k = self._inv_quad_interp(g_c, s_c)  # inverse quadratic interpolation
+            else:
+                s_k = self.s_b - self.g_b * ((self.s_b - self.s_a) / (self.g_b - self.g_a))  # secant method
+
+            if (
+                ((3 * self.s_a + self.s_b) / 4 < self.s_k < self.s_b)
+                or (flag and abs(s_k - self.s_b) >= abs(self.s_b - s_c) / 2)
+                or (not flag and abs(s_k - self.s_b) >= abs(s_c - s_d) / 2)
+                or (flag and abs(self.s_b - s_c) < atol)
+                or (not flag and abs(s_c - s_d) < atol)
+            ):
+                s_k = (self.s_a + self.s_b) / 2  # bisect method
+                flag = True
+
+            else:
+                flag = False
+
+            # Update the state vector using a relative step between
+            # alpha and the upper bracket.
+            u.add_scal_vec(s_k - self.s_a, du)
+
+            # Evaluate the residuals
+            self._single_iteration()
+            self._iter_count += 1
+
+            g_k = np.inner(du.asarray(), system._residuals.asarray())
+
+            s_d, g_d = s_c, g_c
+            s_c, g_c = self.s_b, self.g_b
+
+            if np.sign(self.g_a) * np.sign(self.g_b) < 0:
+                self.s_b, self.g_b = s_k, g_k
+            else:
+                self.s_a, self.g_b = s_k, g_k
+
+            if abs(self.g_a) < abs(self.g_b):
+                self.s_a, self.s_b, self.g_a, self.g_b = self.s_b, self.s_a, self.g_b, self.g_a
+
+        return s_k
+
     def _illinois(self, alpha, g, u, du, rec):
         """Illinois root finding algorithm
 

@@ -438,7 +438,9 @@ class InnerProductLS(LinesearchSolver):
         s_c, g_c = self.s_a, self.g_a
         flag = True
 
-        while self.g_b != 0.0 and self.g_k != 0.0 and self._iter_count < maxiter and abs(self.s_b - self.s_a) > 1e-4:
+        while self._iter_count < maxiter and (
+            not self.g_b == 0.0 and not self.g_k == 0.0 or abs(self.s_b - self.s_a) > 1e-4
+        ):
             if self.g_a != g_c and self.g_b != g_c:
                 s_k = self._inv_quad_interp(g_c, s_c)  # inverse quadratic interpolation
             else:

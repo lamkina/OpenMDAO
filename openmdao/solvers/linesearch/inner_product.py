@@ -4,7 +4,7 @@ Inner Product line search
 InnerProductLS - The inner product line search seeks to find the
 point along the direction of the Newton Step for which the inner
 product of the Newton Step vector and residuals vector equals zero.
-The linesearch uses a bracketing and pinpointing algorithm to solve
+The linesearch uses bracketing and root finding algorithms to solve
 for the zero of the dot product.
 
 Reference
@@ -213,6 +213,13 @@ class InnerProductLS(LinesearchSolver):
         """
         Perform any necessary pre-processing operations.
 
+        Parameters
+        ----------
+        u : <vector>
+            State vector
+        du : <vector>
+            Newton Step
+
         Returns
         -------
         float
@@ -220,6 +227,7 @@ class InnerProductLS(LinesearchSolver):
         float
             error at the first iteration.
         """
+
         self.SOLVER = "LS: IP BRKT"
         system = self._system()
         self.s_b = 0.0
@@ -268,13 +276,34 @@ class InnerProductLS(LinesearchSolver):
         """
         super()._declare_options()
         opt = self.options
-        opt.declare("gamma", default=2.0, desc="Bracketing expansion factor")
-        opt.declare("rho", default=0.5, desc="Root finding contraction factor")
-        opt.declare("s_max", default=16.0, desc="Largest allowable bracketing step")
-        opt.declare("s_a", default=1.0, desc="Initial upper bracket step")
-        opt.declare("stol", default=0.5, desc="Root finding tolerance for the Illinois algorithm")
-        opt.declare("maxiter_bracketing", default=10, desc="Maximum bracketing iterations")
-        opt.declare("maxiter_rootfinder", default=10, desc="Maximum root finding iterations")
+        opt.declare(
+            "beta",
+            default=2.0,
+            desc="Bracketing expansion factor."
+            + "Beta is multiplied with the upper bracket step to expand the bracket.",
+        )
+        opt.declare(
+            "rho",
+            default=0.5,
+            desc="Illinois algorithm contraction factor."
+            + "This factor is useful for increasing the convergence rate"
+            + "when the euclidian norm of the residual vector is very"
+            + "large at one of the bracketing points.",
+        )
+        opt.declare(
+            "s_max",
+            default=16.0,
+            desc="Largest allowable bracketing step.  The bracketing"
+            + "phase will terminate if the upper bracket step goes beyond this limit.",
+        )
+        opt.declare("s_a", default=1.0, desc="Initial upper bracket step.")
+        opt.declare("maxiter_root", default=10, desc="Maximum iterations taken by the root finding algorithm.")
+        opt.declare(
+            "root_method",
+            default="illinois",
+            values=["illinois", "brent", "ridder"],
+            desc="Name of the root finding algorithm.",
+        )
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
 
         # Remove unused options from base options here, so that users
@@ -337,8 +366,13 @@ class InnerProductLS(LinesearchSolver):
         system = self._system()
         options = self.options
         s_max = options["s_max"]
-        gamma = options["gamma"]
-        maxiter = options["maxiter_bracketing"]
+        beta = options["beta"]
+
+        # Max bracketing iterations to prevent the backtracking restoration
+        # search from continuing indefinitely
+        maxiter = 10
+
+        # Disable the restoration algorithm
         restoration = False
 
         while (
@@ -347,6 +381,8 @@ class InnerProductLS(LinesearchSolver):
             and (np.sign(self.g_a) * np.sign(self.g_b) > 0 or self._analysis_error_raised)
         ):
 
+            # Enable the restoration algorithm and backtrack to recover
+            # from an analysis error.
             if self._analysis_error_raised and self._iter_count > 0:
                 restoration = True
 
@@ -363,7 +399,7 @@ class InnerProductLS(LinesearchSolver):
                 self.g_b = self.g_a
 
                 # Update the upper bracket step
-                self.s_a = gamma * self.s_a
+                self.s_a = beta * self.s_a
 
                 s_rel = self.s_a - self.s_b
 
@@ -413,6 +449,21 @@ class InnerProductLS(LinesearchSolver):
         return alpha, g
 
     def _inv_quad_interp(self, g_c, s_c):
+        """Inverse quadratic interpolation for Brent's method
+
+        Parameters
+        ----------
+        g_c : float
+            Inner product at point 'c'
+        s_c : float
+            Step along search direction du at point 'c'
+
+        Returns
+        -------
+        float
+            Step along search direction du at point 'k' that
+            approximates the root
+        """
         s = (
             ((self.s_a * self.g_b * g_c) / ((self.g_a - self.g_b) * (self.g_a - g_c)))
             + ((self.s_b * self.g_a * g_c) / ((self.g_b - self.g_a) * (self.g_b - g_c)))
@@ -421,37 +472,63 @@ class InnerProductLS(LinesearchSolver):
 
         return s
 
-    def _brentq(self, alpha, g, u, du, rec):
+    def _brentq(self, u, du, rec):
+        """
+        Brent's method for finding the root of a function applied to
+        the inner product of the Newton step (du) and the residual
+        vector (R).
+
+        Parameters
+        ----------
+        u : <vector>
+            State vector
+        du : <vector>
+            Newton Step
+        rec : OpenMDAO recorder
+            The recorder object for this line search solver
+
+        Reference
+        ---------
+        Brent, Richard P. 1973. Algorithms for Minimization without
+        Derivatives. Algorithms for Minimization without Derivatives.
+        Englewood Cliffs, New Jersey: Prentice-Hall.
+        """
+        self.SOLVER = "LS: IP BRENT"
         system = self._system()
         options = self.options
-        maxiter = options["maxiter_rootfinder"]
-        atol = options["atol"]
+        maxiter = options["maxiter_root"]
 
         # Exit if there is no bracket
         if np.sign(self.g_a) * np.sign(self.g_b) >= 0:
             return
 
-        # Swap bracket
+        # State vector is always at point 'a' after bracketing.
+        state_vec_loc = "a"
+
+        # Swap a and b
         if abs(self.g_a) < abs(self.g_b):
+            # State vector is always at point 'a' after bracketing.
+            # If a swap occurs, we know it simply switches to point 'b'.
+            state_vec_loc = "b"
             self.s_a, self.s_b, self.g_a, self.g_b = self.s_b, self.s_a, self.g_b, self.g_a
 
         s_c, g_c = self.s_a, self.g_a
+        s_d = 0.0  # Initialize this to zero, but will not be used on the first iteration
+        g_k = self.g_b
         flag = True
 
-        while self._iter_count < maxiter and (
-            not self.g_b == 0.0 and not self.g_k == 0.0 or abs(self.s_b - self.s_a) > 1e-4
-        ):
+        while self._iter_count < maxiter and not self.g_b == 0.0 and not g_k == 0.0:
             if self.g_a != g_c and self.g_b != g_c:
                 s_k = self._inv_quad_interp(g_c, s_c)  # inverse quadratic interpolation
             else:
                 s_k = self.s_b - self.g_b * ((self.s_b - self.s_a) / (self.g_b - self.g_a))  # secant method
 
             if (
-                ((3 * self.s_a + self.s_b) / 4 < self.s_k < self.s_b)
+                ((3 * self.s_a + self.s_b) / 4 < s_k < self.s_b)
                 or (flag and abs(s_k - self.s_b) >= abs(self.s_b - s_c) / 2)
                 or (not flag and abs(s_k - self.s_b) >= abs(s_c - s_d) / 2)
-                or (flag and abs(self.s_b - s_c) < atol)
-                or (not flag and abs(s_c - s_d) < atol)
+                or (flag and abs(self.s_b - s_c) < 1e-4)
+                or (not flag and abs(s_c - s_d) < 1e-4)
             ):
                 s_k = (self.s_a + self.s_b) / 2  # bisect method
                 flag = True
@@ -461,7 +538,10 @@ class InnerProductLS(LinesearchSolver):
 
             # Update the state vector using a relative step between
             # alpha and the upper bracket.
-            u.add_scal_vec(s_k - self.s_a, du)
+            if state_vec_loc == "a":
+                u.add_scal_vec(s_k - self.s_a, du)
+            else:
+                u.add_scal_vec(s_k - self.s_b, du)
 
             # Evaluate the residuals
             self._single_iteration()
@@ -469,18 +549,38 @@ class InnerProductLS(LinesearchSolver):
 
             g_k = np.inner(du.asarray(), system._residuals.asarray())
 
-            s_d, g_d = s_c, g_c
+            phi = self._iter_get_norm()
+            rec.abs = phi
+            rec.rel = phi / self._phi0
+
+            self._mpi_print(self._iter_count, phi, s_k)
+
+            s_d = s_c
             s_c, g_c = self.s_b, self.g_b
 
-            if np.sign(self.g_a) * np.sign(self.g_b) < 0:
+            if np.sign(self.g_a) * np.sign(g_k) < 0:
                 self.s_b, self.g_b = s_k, g_k
-            else:
-                self.s_a, self.g_b = s_k, g_k
 
+                # The state vector just moved to point 'k', so now
+                # we set the location depending on which point, 'a' or 'b'
+                # is set as point 'k'.
+                state_vec_loc = "b"
+            else:
+                self.s_a, self.g_a = s_k, g_k
+                state_vec_loc = "a"
+
+            # swap a and b
             if abs(self.g_a) < abs(self.g_b):
                 self.s_a, self.s_b, self.g_a, self.g_b = self.s_b, self.s_a, self.g_b, self.g_a
 
-        return s_k
+                # If the state vector was moved to point 'a' before the swap,
+                # set the location to 'b' after the swap, and vice versa.
+                # This ensures the state vector is scaled with reference to
+                # its previous position and not the other bracket point.
+                if state_vec_loc == "a":
+                    state_vec_loc = "b"
+                else:
+                    state_vec_loc = "a"
 
     def _illinois(self, alpha, g, u, du, rec):
         """Illinois root finding algorithm
@@ -503,20 +603,19 @@ class InnerProductLS(LinesearchSolver):
         G. Dahlquist and 8. Bjorck, Numerical Methods, Prentice-Hall,
         Englewood Cliffs, N.J., 1974.
         """
-        self.SOLVER = "LS: IP PNPT"
+        self.SOLVER = "LS: IP ILLNS"
         system = self._system()
         options = self.options
-        maxiter = options["maxiter_rootfinder"]
-        stol = options["stol"]
+        maxiter = options["maxiter_root"]
         rho = options["rho"]
 
         while (
             np.sign(self.g_a) * np.sign(self.g_b) < 0
             and self._iter_count < maxiter
-            and (abs(g) > stol * abs(self.g_0) or abs(self.s_b - self.s_a) > stol * 0.5 * (self.s_b + self.s_a))
+            and (abs(g) > 0.5 * abs(self.g_0) or abs(self.s_b - self.s_a) > 0.25 * (self.s_b + self.s_a))
         ):
 
-            # Interpolate a new guess for alpha based on the bracket
+            # Interpolate a new guess for alpha based on the bracket using the secant method
             alpha = self.s_a - self.g_a * ((self.s_a - self.s_b) / (self.g_a - self.g_b))
 
             # Update the state vector using a relative step between
@@ -545,12 +644,98 @@ class InnerProductLS(LinesearchSolver):
 
             self._mpi_print(self._iter_count, phi, alpha)
 
+    def _ridder(self, u, du, rec):
+        """Ridder's algorithm for finding rootfinding adapted to work
+        with the inner product of the Newton step (du) and the residual
+        vector (R).
+
+        Parameters
+        ----------
+        u : <vector>
+            State Vector
+        du : <vector>
+            Newton Step
+        rec : OpenMDAO recorder
+            The recorder for the linesearch
+        """
+        self.SOLVER = "LS: IP RIDDR"
+        system = self._system()
+        options = self.options
+        maxiter = options["maxiter_root"]
+
+        # Exit if there is no bracket
+        if np.sign(self.g_a) * np.sign(self.g_b) >= 0:
+            return
+
+        state_vec_loc = "a"
+
+        while self._iter_count < maxiter:
+            # Get a third point with a simple bisection
+            s_c = (self.s_a + self.s_b) / 2
+
+            # Evaluate g_c
+            # State vector will be at either 'a' or 'b' depending on
+            # which point was set as point 'k' in the prior iteraton.
+            # On the first iteration, the state vector will be at the
+            # upper bracket.
+            if state_vec_loc == "a":
+                u.add_scal_vec(s_c - self.s_a, du)
+            else:
+                u.add_scal_vec(s_c - self.s_b, du)
+
+            # Evaluate the residuals
+            self._single_iteration()
+
+            g_c = np.inner(du.asarray(), system._residuals.asarray())
+
+            # Solve the quadratic function and apply the false position method
+            s_k = s_c + (s_c - self.s_b) * np.sign(self.g_b - self.g_a) * g_c / np.sqrt(g_c ** 2 - self.g_b * self.g_a)
+
+            # State vector will be at point 'c', so move the relative
+            # step from point 'c' to point 'k'.
+            u.add_scal_vec(s_k - s_c, du)
+
+            # Evaluate the residuals
+            self._single_iteration()
+
+            g_k = np.inner(du.asarray(), system._residuals.asarray())
+
+            self._iter_count += 1
+
+            phi = self._iter_get_norm()
+            rec.abs = phi
+            rec.rel = phi / self._phi0
+
+            self._mpi_print(self._iter_count, phi, s_k)
+
+            if min(abs(s_k - self.s_b), abs(s_k - self.s_a)) < 1e-12:
+                return
+
+            if abs(g_k) < 1e-6:
+                return
+
+            # Adjust the bracket to converge on the root and adjust
+            # the state vector location depending on which point, 'a' or 'b',
+            # is set equal to the current location 'k'.
+            if np.sign(g_c) * np.sign(g_k) < 0:
+                self.s_b, self.g_b, self.s_a, self.g_a = s_c, g_c, s_k, g_k
+                state_vec_loc = "a"
+
+            elif np.sign(self.g_a) * np.sign(g_k) < 0:
+                self.s_b, self.g_b = s_k, g_k
+                state_vec_loc = "b"
+
+            else:
+                self.s_a, self.g_a = s_k, g_k
+                state_vec_loc = "a"
+
     def _solve(self):
         """
         Run the iterative solver.
         """
         options = self.options
         atol = options["atol"]
+        method = options["root_method"]
 
         system = self._system()
         u = system._outputs
@@ -562,23 +747,28 @@ class InnerProductLS(LinesearchSolver):
 
         with Recording("InnerProductLS", self._iter_count, self) as rec:  # NOQA
 
-            # Find the interval that brackets the root.  Analysis errors
-            # are caught within the bracketing phase and bounds are enforced
-            # at the upper step of the bracket.  If the bracketing phase
-            # exits without error, we should be able to find a step length
-            # within the bracket which drives the inner product to zero.
-            alpha, g = self._bracketing(u, du, phi, rec)
-
             # The upper bracket step is the largest step we can take
-            # within the bounds.  If the iter norm is less than the
-            # requested absolute tolerance, we skip the root finding
-            # and take the full upper bracket step.
+            # within the bounds.  If the residual norm is less than the
+            # requested absolute tolerance, we take the initial step
+            # without bracketing or pinpointing.
             if not self._iter_get_norm() < atol:
+                # Find the interval that brackets the root.  Analysis errors
+                # are caught within the bracketing phase and bounds are enforced
+                # at the upper step of the bracket.  If the bracketing phase
+                # exits without error, we should be able to find a step length
+                # within the bracket which drives the inner product to zero.
+                alpha, g = self._bracketing(u, du, phi, rec)
+
                 # Find the zero of the inner product between the Newton step
                 # and residual vectors within the bracketing interval
-                # using the Illinois algorithm.
+                # using the requested root finding algorithm.
                 self._iter_count = 0
-                self._illinois(alpha, g, u, du, rec)
+                if method == "illinois":
+                    self._illinois(alpha, g, u, du, rec)
+                elif method == "brent":
+                    self._brentq(u, du, rec)
+                elif method == "ridder":
+                    self._ridder(u, du, rec)
 
 
 def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):

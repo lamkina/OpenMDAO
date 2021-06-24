@@ -114,6 +114,29 @@ class TestInnerProductBounds(unittest.TestCase):
         top.run_model()
         assert_near_equal(top["comp.z"], 2.5, 1e-8)
 
+    def test_linesearch_bounds_vector_toms748(self):
+        top = self.top
+
+        ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="vector")
+        ls.options["root_method"] = "toms748"
+
+        # Setup again because we assigned a new linesearch
+        top.setup()
+
+        # Test lower bound: should go to the lower bound and stall
+        top["px.x"] = 2.0
+        top["comp.y"] = 0.0
+        top["comp.z"] = 1.6
+        top.run_model()
+        assert_near_equal(top["comp.z"], 1.5, 1e-8)
+
+        # Test upper bound: should go to the upper bound and stall
+        top["px.x"] = 0.5
+        top["comp.y"] = 0.0
+        top["comp.z"] = 2.4
+        top.run_model()
+        assert_near_equal(top["comp.z"], 2.5, 1e-8)
+
     def test_linesearch_bounds_scalar_illinois(self):
         top = self.top
 
@@ -175,6 +198,34 @@ class TestInnerProductBounds(unittest.TestCase):
 
         ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="scalar")
         ls.options["root_method"] = "ridder"
+
+        # Setup again because we assigned a new linesearch
+        top.setup()
+
+        top.set_solver_print(level=-1)
+        top.set_solver_print(level=2, depth=1)
+
+        # Test lower bound: should stop just short of the lower bound
+        top["px.x"] = 2.0
+        top["comp.y"] = 0.0
+        top["comp.z"] = 1.6
+        top.run_model()
+        self.assertGreaterEqual(top["comp.z"], 1.5)
+        self.assertLessEqual(top["comp.z"], 2.5)
+
+        # Test lower bound: should stop just short of the upper bound
+        top["px.x"] = 0.5
+        top["comp.y"] = 0.0
+        top["comp.z"] = 2.4
+        top.run_model()
+        self.assertGreaterEqual(top["comp.z"], 1.5)
+        self.assertLessEqual(top["comp.z"], 2.5)
+
+    def test_linesearch_bounds_scalar_toms748(self):
+        top = self.top
+
+        ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="scalar")
+        ls.options["root_method"] = "toms748"
 
         # Setup again because we assigned a new linesearch
         top.setup()
@@ -283,7 +334,7 @@ class TestAnalysisErrorExplicit(unittest.TestCase):
         top.model.linear_solver = om.ScipyKrylov()
 
         ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="vector")
-        # ls.options["s_a"] = 1.0
+        # ls.options["alpha"] = 1.0
         top.set_solver_print(level=0)
 
         self.top = top
@@ -397,7 +448,7 @@ class TestAnalysisErrorImplicit(unittest.TestCase):
         sub.linear_solver = om.ScipyKrylov()
 
         ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="vector")
-        ls.options["s_a"] = 10.0
+        ls.options["alpha"] = 10.0
         ls.options["retry_on_analysis_error"] = True
 
         top.setup()
@@ -448,7 +499,7 @@ class TestAnalysisErrorImplicit(unittest.TestCase):
         sub.linear_solver = om.ScipyKrylov()
 
         ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="scalar")
-        ls.options["s_a"] = 10.0
+        ls.options["alpha"] = 10.0
         ls.options["retry_on_analysis_error"] = True
 
         top.setup()
@@ -604,6 +655,31 @@ class TestInnerProductLSArrayBounds(unittest.TestCase):
         for ind in range(3):
             assert_near_equal(top["comp.z"][ind], [2.5], 1e-8)
 
+    def test_linesearch_vector_bound_enforcement_toms748(self):
+        top = self.top
+
+        ls = top.model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="vector")
+        ls.options["root_method"] = "toms748"
+
+        # Setup again because we assigned a new linesearch
+        top.setup()
+
+        # Test lower bounds: should go to the lower bound and stall
+        top["px.x"] = 2.0
+        top["comp.y"] = 0.0
+        top["comp.z"] = 1.6
+        top.run_model()
+        for ind in range(3):
+            assert_near_equal(top["comp.z"][ind], [1.5], 1e-8)
+
+        # Test upper bounds: should go to the minimum upper bound and stall
+        top["px.x"] = 0.5
+        top["comp.y"] = 0.0
+        top["comp.z"] = 2.4
+        top.run_model()
+        for ind in range(3):
+            assert_near_equal(top["comp.z"][ind], [2.5], 1e-8)
+
     def test_with_subsolves_illinois(self):
 
         prob = om.Problem()
@@ -692,6 +768,39 @@ class TestInnerProductLSArrayBounds(unittest.TestCase):
         model.nonlinear_solver.options["max_sub_solves"] = 4
         ls = model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="vector")
         ls.options["root_method"] = "ridder"
+
+        prob.set_solver_print(level=0)
+
+        prob.setup()
+        prob.run_model()
+
+        assert_near_equal(prob["g1.y1"], 0.64, 0.00001)
+        assert_near_equal(prob["g1.y2"], 0.80, 0.00001)
+        assert_near_equal(prob["g2.y1"], 0.64, 0.00001)
+        assert_near_equal(prob["g2.y2"], 0.80, 0.00001)
+
+    def test_with_subsolves_toms748(self):
+
+        prob = om.Problem()
+        model = prob.model = DoubleSellarMod()
+
+        g1 = model.g1
+        g1.nonlinear_solver = om.NewtonSolver(solve_subsystems=False)
+        g1.nonlinear_solver.options["rtol"] = 1.0e-5
+        g1.linear_solver = om.DirectSolver()
+
+        g2 = model.g2
+        g2.nonlinear_solver = om.NewtonSolver(solve_subsystems=False)
+        g2.nonlinear_solver.options["rtol"] = 1.0e-5
+        g2.linear_solver = om.DirectSolver()
+
+        model.nonlinear_solver = om.NewtonSolver()
+        model.linear_solver = om.ScipyKrylov()
+
+        model.nonlinear_solver.options["solve_subsystems"] = True
+        model.nonlinear_solver.options["max_sub_solves"] = 4
+        ls = model.nonlinear_solver.linesearch = om.InnerProductLS(bound_enforcement="vector")
+        ls.options["root_method"] = "toms748"
 
         prob.set_solver_print(level=0)
 

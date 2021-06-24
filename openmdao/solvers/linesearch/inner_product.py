@@ -301,10 +301,11 @@ class InnerProductLS(LinesearchSolver):
         opt.declare(
             "root_method",
             default="illinois",
-            values=["illinois", "brent", "ridder"],
+            values=["illinois", "brent", "ridder", "toms748"],
             desc="Name of the root finding algorithm.",
         )
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
+        opt.declare("k", default=2, values=[1, 2])
 
         # Remove unused options from base options here, so that users
         # attempting to set them will get KeyErrors.
@@ -357,10 +358,8 @@ class InnerProductLS(LinesearchSolver):
 
         Returns
         -------
-        tuple(float, float)
-            A tuple containing the step found by bracketing and the
-            inner product of the Newton step and the residual vectors
-            at that step.
+        float
+            Function value at the upper bracket step
         """
         self.SOLVER = "LS: IP BRKT"
         system = self._system()
@@ -442,35 +441,9 @@ class InnerProductLS(LinesearchSolver):
             if restoration and not self._analysis_error_raised:
                 break
 
-        # Set the current step and value to the upper bracket value
-        alpha = self.s_a
         g = self.g_a
 
-        return alpha, g
-
-    def _inv_quad_interp(self, g_c, s_c):
-        """Inverse quadratic interpolation for Brent's method
-
-        Parameters
-        ----------
-        g_c : float
-            Inner product at point 'c'
-        s_c : float
-            Step along search direction du at point 'c'
-
-        Returns
-        -------
-        float
-            Step along search direction du at point 'k' that
-            approximates the root
-        """
-        s = (
-            ((self.s_a * self.g_b * g_c) / ((self.g_a - self.g_b) * (self.g_a - g_c)))
-            + ((self.s_b * self.g_a * g_c) / ((self.g_b - self.g_a) * (self.g_b - g_c)))
-            + ((s_c * self.g_a * self.g_b) / ((g_c - self.g_a) * (g_c - self.g_b)))
-        )
-
-        return s
+        return g
 
     def _brentq(self, u, du, rec):
         """
@@ -517,9 +490,10 @@ class InnerProductLS(LinesearchSolver):
         g_k = self.g_b
         flag = True
 
-        while self._iter_count < maxiter and not self.g_b == 0.0 and not g_k == 0.0:
+        while self._iter_count < maxiter and self.g_b != 0.0 and g_k != 0.0:
             if self.g_a != g_c and self.g_b != g_c:
-                s_k = self._inv_quad_interp(g_c, s_c)  # inverse quadratic interpolation
+                # inverse quadratic interpolation
+                s_k = _inv_quad_interp(self.s_a, self.g_a, self.s_b, self.g_b, s_c, g_c)
             else:
                 s_k = self.s_b - self.g_b * ((self.s_b - self.s_a) / (self.g_b - self.g_a))  # secant method
 
@@ -582,15 +556,13 @@ class InnerProductLS(LinesearchSolver):
                 else:
                     state_vec_loc = "a"
 
-    def _illinois(self, alpha, g, u, du, rec):
+    def _illinois(self, g, u, du, rec):
         """Illinois root finding algorithm
 
         Parameters
         ----------
-        alpha : float
-            Step from the bracketing algorithm
         g : float
-            Inner product at step alpha from the bracketing algorithm
+            Function value at step alpha from the bracketing algorithm
         u : <vector>
             State vector
         du : <vector>
@@ -657,6 +629,13 @@ class InnerProductLS(LinesearchSolver):
             Newton Step
         rec : OpenMDAO recorder
             The recorder for the linesearch
+
+        Reference
+        ---------
+        C. Ridders, "A new algorithm for computing a single root of a
+        real continuous function," in IEEE Transactions on Circuits
+        and Systems, vol. 26, no. 11, pp. 979-980, November 1979,
+        doi: 10.1109/TCS.1979.1084580.
         """
         self.SOLVER = "LS: IP RIDDR"
         system = self._system()
@@ -729,6 +708,186 @@ class InnerProductLS(LinesearchSolver):
                 self.s_a, self.g_a = s_k, g_k
                 state_vec_loc = "a"
 
+    def _toms748(self, u, du, rec):
+        """TOMS 748 root finding algorithm that uses cubic interpolation
+        and Newton-quadratic steps to find the root of the function.py
+
+        Parameters
+        ----------
+        u : <vector>
+            The state vector
+        du : <vector>
+            The Newton step
+        rec : OpenMDAO recorder
+            The recorder for the linesearch solver
+
+        Reference
+        ---------
+        G. E. Alefeld, F. A. Potra, and Yixun Shi. 1995.
+        Algorithm 748: enclosing zeros of continuous functions.
+        ACM Trans. Math. Softw. 21, 3 (Sept. 1995), 327–344.
+        DOI:https://doi.org/10.1145/210089.210111
+        """
+        self.SOLVER = "LS: IP TOMS"
+        system = self._system()
+        options = self.options
+        self.k = options["k"]
+        self._state_vec_loc = 1
+
+        # Exit if there is no bracket
+        if np.sign(self.g_a) * np.sign(self.g_b) >= 0:
+            return
+
+        # Initialize point 'c' using the secant method
+        s_c = self.s_b - self.g_b * ((self.s_b - self.s_a) / (self.g_b - self.g_a))
+
+        if not self.s_b < s_c < self.s_a:
+            # Simple bisection to ensure point 'c' is within the bracket
+            s_c = (self.s_a + self.s_b) / 2
+
+        # Evaluate the residuals at point 'c'
+        # The state vector is at 'a' so we move relative to 'a'
+        u.add_scal_vec(s_c - self.s_a, du)
+        self._single_iteration()
+        phi = self._iter_get_norm()
+        g_c = np.inner(du.asarray(), system._residuals.asarray())
+
+        # If g_c equals zero we found the root, exit
+        if g_c == 0:
+            return
+
+        # Convert brackets to lists to match scipy implementation
+        self.s_ab = [self.s_b, self.s_a]
+        self.g_ab = [self.g_b, self.g_a]
+
+        self.s_d, self.g_d, self._state_vec_loc = self._update_bracket(s_c, g_c)
+
+        self.s_e, self.g_e = None, None
+
+        # Increase the iteration count, record the residual norms, and print
+        self._iter_count += 1
+        rec.abs = phi
+        rec.rel = phi / self._phi0
+
+        self._mpi_print(self._iter_count, phi, s_c)
+
+        while True:
+            status = self._toms748_single_iteration(u, du, rec)
+            if status:
+                return
+
+    def _toms748_single_iteration(self, u, du, rec):
+        system = self._system()
+        self._iter_count += 1
+        eps = np.finfo(float).eps
+        s_d, g_d, s_e, g_e = self.s_d, self.g_d, self.s_e, self.g_e
+        s_ab_width = self.s_ab[1] - self.s_ab[0]
+        s_c = None
+
+        for nsteps in range(2, self.k + 2):
+            # If the f-values are sufficiently separated, perform an inverse
+            # polynomial interpolation step. Otherwise, nsteps repeats of
+            # an approximate Newton-Raphson step.
+            if _notclose(self.g_ab + [g_d, g_e], rtol=0, atol=32 * eps):
+                s_c0 = _inverse_poly_zero(self.s_ab[0], self.s_ab[1], s_d, s_e, self.g_ab[0], self.g_ab[1], g_d, g_e)
+
+                if self.s_ab[0] < s_c0 < self.s_ab[1]:
+                    s_c = s_c0
+
+            if s_c is None:
+                s_c = _newton_quadratic(self.s_ab, self.g_ab, s_d, g_d, nsteps)
+
+            u.add_scal_vec(s_c - self.s_ab[self._state_vec_loc], du)
+            self._single_iteration()
+            g_c = np.inner(du.asarray(), system._residuals.asarray())
+
+            if g_c == 0:
+                return True
+
+            # re-bracket
+            s_e, g_e = s_d, g_d
+            s_d, g_d, self._state_vec_loc = self._update_bracket(s_c, g_c)
+
+            # u is the endpoint with the smallest f-value
+            uix = 0 if np.abs(self.g_ab[0]) < np.abs(self.g_ab[1]) else 1
+            s_u, g_u = self.s_ab[uix], self.g_ab[uix]
+
+            _, A = _compute_divided_differences(self.s_ab, self.g_ab, forward=(uix == 0), full=False)
+
+            s_c = s_u - 2 * g_u / A
+
+            if np.abs(s_c - s_u) > 0.5 * (self.s_ab[1] - self.s_ab[0]):
+                s_c = sum(self.s_ab) / 2.0
+            else:
+                if np.isclose(s_c, s_u, rtol=eps, atol=0):
+                    # c didn't change (much).
+                    # Either because the f-values at the endpoints have vastly
+                    # differing magnitudes, or because the root is very close to
+                    # that endpoint
+                    frs = np.frexp(self.g_ab)[1]
+                    if frs[uix] < frs[1 - uix] - 50:  # Differ by more than 2**50
+                        s_c = (31 * self.s_ab[uix] + self.s_ab[1 - uix]) / 32
+                    else:
+                        # Make a bigger adjustment, about the
+                        # size of the requested tolerance.
+                        mm = 1 if uix == 0 else -1
+                        adj = mm * np.abs(c) * 1e-6 + mm * 1e-6
+                        s_c = s_u + adj
+                    if not self.s_ab[0] < s_c < self.s_ab[1]:
+                        s_c = sum(self.s_ab) / 2.0
+
+            # Move the state vector, evaluate the residuals, then calculate the
+            # inner product and residual vector norm
+            u.add_scal_vec(s_c - self.s_ab[self._state_vec_loc], du)
+            self._single_iteration()
+            g_c = np.inner(du.asarray(), system._residuals.asarray())
+
+            if g_c == 0:
+                return True
+
+            s_e, g_e = s_d, g_d
+            s_d, g_d, self._state_vec_loc = self._update_bracket(s_c, g_c)
+
+            # If the width of the new interval did not decrease enough, bisect
+            if self.s_ab[1] - self.s_ab[0] > 0.5 * s_ab_width:
+                s_e, g_e = s_d, g_d
+                s_z = sum(self.s_ab) / 2.0
+                u.add_scal_vec(s_z - self.s_ab[self._state_vec_loc], du)
+                self._single_iteration()
+                g_z = np.inner(du.asarray(), system._residuals.asarray())
+
+                if g_z == 0:
+                    return True
+
+                s_d, g_d, self._state_vec_loc = self._update_bracket(s_z, g_z)
+
+            # Record d and e for next iteration
+            self.s_d, self.g_d = s_d, g_d
+            self.s_e, self.g_e = s_e, g_e
+
+            phi = self._iter_get_norm()
+            rec.abs = phi
+            rec.rel = phi / self._phi0
+
+            self._mpi_print(self._iter_count, phi, s_c)
+
+            status = self._toms748_get_status()
+            return status
+
+    def _update_bracket(self, s_c, g_c):
+        return _update_bracket(self.s_ab, self.g_ab, s_c, g_c)
+
+    def _toms748_get_status(self):
+        """Determine the current status."""
+        options = self.options
+        maxiter = options["maxiter_root"]
+        s_a, s_b = self.s_ab[:2]
+        if np.isclose(s_a, s_b, rtol=1e-6, atol=1e-6):
+            return True
+        if self._iter_count >= maxiter:
+            return True
+        return False
+
     def _solve(self):
         """
         Run the iterative solver.
@@ -757,18 +916,165 @@ class InnerProductLS(LinesearchSolver):
                 # at the upper step of the bracket.  If the bracketing phase
                 # exits without error, we should be able to find a step length
                 # within the bracket which drives the inner product to zero.
-                alpha, g = self._bracketing(u, du, phi, rec)
+                g = self._bracketing(u, du, phi, rec)
 
                 # Find the zero of the inner product between the Newton step
                 # and residual vectors within the bracketing interval
                 # using the requested root finding algorithm.
                 self._iter_count = 0
                 if method == "illinois":
-                    self._illinois(alpha, g, u, du, rec)
+                    self._illinois(g, u, du, rec)
                 elif method == "brent":
                     self._brentq(u, du, rec)
                 elif method == "ridder":
                     self._ridder(u, du, rec)
+                elif method == "toms748":
+                    self._toms748(u, du, rec)
+
+
+def _newton_quadratic(ab, fab, d, fd, k):
+    """Apply Newton-Raphson like steps, using divided differences to approximate f'
+    ab is a real interval [a, b] containing a root,
+    fab holds the real values of f(a), f(b)
+    d is a real number outside [ab, b]
+    k is the number of steps to apply
+    """
+    a, b = ab
+    fa, fb = fab
+    _, B, A = _compute_divided_differences([a, b, d], [fa, fb, fd], forward=True, full=False)
+
+    # _P  is the quadratic polynomial through the 3 points
+    def _P(x):
+        # Horner evaluation of fa + B * (x - a) + A * (x - a) * (x - b)
+        return (A * (x - b) + B) * (x - a) + fa
+
+    if A == 0:
+        r = a - fa / B
+    else:
+        r = a if np.sign(A) * np.sign(fa) > 0 else b
+    # Apply k Newton-Raphson steps to _P(x), starting from x=r
+    for i in range(k):
+        r1 = r - _P(r) / (B + A * (2 * r - a - b))
+        if not (ab[0] < r1 < ab[1]):
+            if ab[0] < r < ab[1]:
+                return r
+            r = sum(ab) / 2.0
+            break
+        r = r1
+
+    return r
+
+
+def _compute_divided_differences(xvals, fvals, N=None, full=True, forward=True):
+    """Return a matrix of divided differences for the xvals, fvals pairs
+    DD[i, j] = f[x_{i-j}, ..., x_i] for 0 <= j <= i
+    If full is False, just return the main diagonal(or last row):
+      f[a], f[a, b] and f[a, b, c].
+    If forward is False, return f[c], f[b, c], f[a, b, c]."""
+    if full:
+        if forward:
+            xvals = np.asarray(xvals)
+        else:
+            xvals = np.array(xvals)[::-1]
+        M = len(xvals)
+        N = M if N is None else min(N, M)
+        DD = np.zeros([M, N])
+        DD[:, 0] = fvals[:]
+        for i in range(1, N):
+            DD[i:, i] = np.diff(DD[i - 1 :, i - 1]) / (xvals[i:] - xvals[: M - i])
+        return DD
+
+    xvals = np.asarray(xvals)
+    dd = np.array(fvals)
+    row = np.array(fvals)
+    idx2Use = 0 if forward else -1
+    dd[0] = fvals[idx2Use]
+    for i in range(1, len(xvals)):
+        denom = xvals[i : i + len(row) - 1] - xvals[: len(row) - 1]
+        row = np.diff(row)[:] / denom
+        dd[i] = row[idx2Use]
+    return dd
+
+
+def _interpolated_poly(xvals, fvals, x):
+    """Compute p(x) for the polynomial passing through the specified locations.
+    Use Neville's algorithm to compute p(x) where p is the minimal degree
+    polynomial passing through the points xvals, fvals"""
+    xvals = np.asarray(xvals)
+    N = len(xvals)
+    Q = np.zeros([N, N])
+    D = np.zeros([N, N])
+    Q[:, 0] = fvals[:]
+    D[:, 0] = fvals[:]
+    for k in range(1, N):
+        alpha = D[k:, k - 1] - Q[k - 1 : N - 1, k - 1]
+        diffik = xvals[0 : N - k] - xvals[k:N]
+        Q[k:, k] = (xvals[k:] - x) / diffik * alpha
+        D[k:, k] = (xvals[: N - k] - x) / diffik * alpha
+    # Expect Q[-1, 1:] to be small relative to Q[-1, 0] as x approaches a root
+    return np.sum(Q[-1, 1:]) + Q[-1, 0]
+
+
+def _inverse_poly_zero(a, b, c, d, fa, fb, fc, fd):
+    """Inverse cubic interpolation f-values -> x-values
+    Given four points (fa, a), (fb, b), (fc, c), (fd, d) with
+    fa, fb, fc, fd all distinct, find poly IP(y) through the 4 points
+    and compute x=IP(0).
+    """
+    return _interpolated_poly([fa, fb, fc, fd], [a, b, c, d], 0)
+
+
+def _notclose(fs, rtol=1e-6, atol=1e-6):
+    # Ensure not None, not 0, all finite, and not very close to each other
+    notclosefvals = (
+        all(fs)
+        and all(np.isfinite(fs))
+        and not any(any(np.isclose(_f, fs[i + 1 :], rtol=rtol, atol=atol)) for i, _f in enumerate(fs[:-1]))
+    )
+    return notclosefvals
+
+
+def _update_bracket(ab, fab, c, fc):
+    """Update a bracket given (c, fc), return the discarded endpoints."""
+    fa, fb = fab
+    idx = 0 if np.sign(fa) * np.sign(fc) > 0 else 1
+    rx, rfx = ab[idx], fab[idx]
+    fab[idx] = fc
+    ab[idx] = c
+    return rx, rfx, idx
+
+
+def _inv_quad_interp(s_a, g_a, s_b, g_b, s_c, g_c):
+    """Inverse quadratic interpolation/extrapolation
+
+    Parameters
+    ----------
+    s_a : float
+        Upper bracket step
+    g_a : float
+        Upper bracket objective function value
+    s_b : float
+        Lower bracket step
+    g_b : float
+        Lower bracket function value
+    s_c : float
+        Step at point 'c'
+    g_c : float
+        Function value at point 'c'
+
+    Returns
+    -------
+    float
+        Step along search direction du at point 'k' that
+        approximates the root
+    """
+    s = (
+        ((s_a * g_b * g_c) / ((g_a - g_b) * (g_a - g_c)))
+        + ((s_b * g_a * g_c) / ((g_b - g_a) * (g_b - g_c)))
+        + ((s_c * g_a * g_b) / ((g_c - g_a) * (g_c - g_b)))
+    )
+
+    return s
 
 
 def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):

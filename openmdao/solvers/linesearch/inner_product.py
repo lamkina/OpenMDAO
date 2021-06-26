@@ -213,15 +213,10 @@ class InnerProductLS(LinesearchSolver):
         """
         Perform any necessary pre-processing operations.
 
-        Parameters
-        ----------
-        u : <vector>
-            State vector
-        du : <vector>
-            Newton Step
-
         Returns
         -------
+        float
+            residual norm after initial iteration
         float
             initial error.
         float
@@ -289,25 +284,30 @@ class InnerProductLS(LinesearchSolver):
         opt.declare(
             "beta",
             default=2.0,
-            desc="Bracketing expansion factor."
+            types=float,
+            desc="Bracketing expansion factor. "
             + "Beta is multiplied with the upper bracket step to expand the bracket.",
         )
         opt.declare(
             "rho",
             default=0.5,
-            desc="Illinois algorithm contraction factor."
-            + "This factor is useful for increasing the convergence rate"
-            + "when the euclidian norm of the residual vector is very"
+            types=float,
+            desc="Illinois algorithm contraction factor. "
+            + "This factor is useful for increasing the convergence rate "
+            + "when the euclidian norm of the residual vector is very "
             + "large at one of the bracketing points.",
         )
         opt.declare(
             "alpha_max",
             default=16.0,
-            desc="Largest allowable bracketing step.  The bracketing"
+            types=float,
+            desc="Largest allowable bracketing step.  The bracketing "
             + "phase will terminate if the upper bracket step goes beyond this limit.",
         )
-        opt.declare("alpha", default=1.0, desc="Initial upper bracket step.")
-        opt.declare("maxiter_root", default=10, desc="Maximum iterations taken by the root finding algorithm.")
+        opt.declare("alpha", default=1.0, types=float, desc="Initial upper bracket step.")
+        opt.declare(
+            "maxiter_root", default=10, types=int, desc="Maximum iterations taken by the root finding algorithm."
+        )
         opt.declare(
             "root_method",
             default="illinois",
@@ -315,7 +315,12 @@ class InnerProductLS(LinesearchSolver):
             desc="Name of the root finding algorithm.",
         )
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
-        opt.declare("k", default=2, values=[1, 2])
+        opt.declare(
+            "k",
+            default=2,
+            values=[1, 2],
+            desc="Number of Newton-Raphson steps to apply in the TOMS748 root finding method.",
+        )
 
         # Remove unused options from base options here, so that users
         # attempting to set them will get KeyErrors.
@@ -353,6 +358,24 @@ class InnerProductLS(LinesearchSolver):
             self._run_apply()
 
     def _linesearch_objective(self, alpha_new, alpha_old):
+        """
+        Moves the state vector the difference between the new step length
+        and old step length along the Newton step direction.  Then,
+        evaluate the residuals and take the inner product between the
+        Newton step and residual vectors.
+
+        Parameters
+        ----------
+        alpha_new : float
+            New step length
+        alpha_old : float
+            Old step length
+
+        Returns
+        -------
+        float
+            Inner product between the Newton step and residual vectors.
+        """
         system = self._system()
         u = system._outputs
         du = system._vectors["output"]["linear"]
@@ -367,10 +390,6 @@ class InnerProductLS(LinesearchSolver):
 
         Parameters
         ----------
-        u : <vecotor>
-            State Vector
-        du : <vector>
-            Newton step
         phi : float
             Residual norm at current points
         rec : OpenMDAO recorder
@@ -466,24 +485,33 @@ class InnerProductLS(LinesearchSolver):
                 break
 
     def _inv_quad_interp(self, s_c, g_c):
+        """Calls the inverse quadratic interpolation helper function
+
+        Parameters
+        ----------
+        s_c : float
+            Step length at a midpoint of the bracket
+        g_c : float
+            Inner product at step length 'c'
+
+        Returns
+        -------
+        float
+            Approximate root for the inner product
+        """
         return _inv_quad_interp(self.s_ab[1], self.g_ab[1], self.s_ab[0], self.g_ab[0], s_c, g_c)
 
     def _swap_bracket(self):
+        """Swaps points 'a' and 'b' in the bracket"""
         self.s_ab[1], self.s_ab[0] = self.s_ab[0], self.s_ab[1]
         self.g_ab[1], self.g_ab[0] = self.g_ab[0], self.g_ab[1]
 
     def _brentq(self, rec):
         """
-        Brent's method for finding the root of a function applied to
-        the inner product of the Newton step (du) and the residual
-        vector (R).
+        Brent's method for finding the root of a function.
 
         Parameters
         ----------
-        u : <vector>
-            State vector
-        du : <vector>
-            Newton Step
         rec : OpenMDAO recorder
             The recorder object for this line search solver
 
@@ -521,9 +549,7 @@ class InnerProductLS(LinesearchSolver):
                 # inverse quadratic interpolation
                 s_k = self._inv_quad_interp(s_c, g_c)
             else:
-                s_k = self.s_ab[0] - self.g_ab[0] * (
-                    (self.s_ab[0] - self.s_ab[1]) / (self.g_ab[0] - self.g_ab[1])
-                )  # secant method
+                s_k = self.s_ab[0] - self.g_ab[0] * ((self.s_ab[0] - self.s_ab[1]) / (self.g_ab[0] - self.g_ab[1]))
 
             if (
                 ((3 * self.s_ab[1] + self.s_ab[0]) / 4 < s_k < self.s_ab[0])
@@ -575,16 +601,11 @@ class InnerProductLS(LinesearchSolver):
                     uidx = 1
 
     def _illinois(self, rec):
-        """Illinois root finding algorithm
+        """Illinois root finding algorithm that is a variation of the
+        secant method.
 
         Parameters
         ----------
-        g : float
-            Function value at step alpha from the bracketing algorithm
-        u : <vector>
-            State vector
-        du : <vector>
-            Newton step
         rec : OpenMDAO recorder
             The recorder for the linesearch
 
@@ -635,6 +656,20 @@ class InnerProductLS(LinesearchSolver):
             self._mpi_print(self._iter_count, phi, s_k)
 
     def _false_position(self, s_c, g_c):
+        """Calls the false position helper function
+
+        Parameters
+        ----------
+        s_c : float
+            Step length at point 'c' within the bracketed interval
+        g_c : float
+            Inner product at point 'c'
+
+        Returns
+        -------
+        float
+            Approximate root of the inner product
+        """
         return _false_position(self.s_ab[0], self.g_ab[1], self.g_ab[0], s_c, g_c)
 
     def _ridder(self, rec):
@@ -715,15 +750,16 @@ class InnerProductLS(LinesearchSolver):
                 uidx = 1
 
     def _toms748(self, rec):
-        """TOMS 748 root finding algorithm that uses cubic interpolation
-        and Newton-quadratic steps to find the root of the function.py
+        """
+        TOMS 748 root finding algorithm that uses cubic interpolation
+        and Newton-quadratic steps to find the root of the inner product.
+        This method uses more function evaluations per iteration, but
+        may have better convergence rates for non-numerically challenging
+        problems.  The current implementation is from SciPy and is
+        adapted to work with OpenMDAO.
 
         Parameters
         ----------
-        u : <vector>
-            The state vector
-        du : <vector>
-            The Newton step
         rec : OpenMDAO recorder
             The recorder for the linesearch solver
 
@@ -780,6 +816,22 @@ class InnerProductLS(LinesearchSolver):
                 return
 
     def _toms748_single_iteration(self, rec):
+        """
+        Performs a single iteration of the TOMS748 root finding
+        algorithm.
+
+        Parameters
+        ----------
+        rec : OpenMDAO recorder
+            Recorder for the linesearch solver
+
+        Returns
+        -------
+        bool
+            The exit status of the iteration.
+            True: Terminate iterations, root found or maxiter exceeded
+            False: Continue iterating
+        """
         self._iter_count += 1
         eps = np.finfo(float).eps
         s_d, g_d, s_e, g_e = self.s_d, self.g_d, self.s_e, self.g_e
@@ -871,10 +923,27 @@ class InnerProductLS(LinesearchSolver):
             return status
 
     def _update_bracket(self, s_c, g_c):
+        """Updates the bracket by calling the update bracket helper function
+
+        Parameters
+        ----------
+        s_c : float
+            Step length within the original bracket
+        g_c : float
+            Inner product at step length 'c'
+
+        Returns
+        -------
+        tuple(float, float, int)
+            The first two values are the step length and inner product
+            of the old bracket point.  The final point is the index
+            of the bracket point that corresponds to the current
+            position of the state vector.
+        """
         return _update_bracket(self.s_ab, self.g_ab, s_c, g_c)
 
     def _toms748_get_status(self):
-        """Determine the current status."""
+        """Determine the current status of the TOMS748 algorithm"""
         options = self.options
         maxiter = options["maxiter_root"]
         s_a, s_b = self.s_ab[:2]
@@ -888,28 +957,26 @@ class InnerProductLS(LinesearchSolver):
         """
         Run the iterative solver.
         """
+        self._iter_count = 0
         options = self.options
         atol = options["atol"]
         method = options["root_method"]
 
         phi = self._iter_initialize()
 
-        self._iter_count = 0
-
         with Recording("InnerProductLS", self._iter_count, self) as rec:  # NOQA
 
-            # The upper bracket step is the largest step we can take
-            # within the bounds.  If the residual norm is less than the
-            # requested absolute tolerance, we take the initial step
-            # without bracketing or pinpointing.
-            if not self._iter_get_norm() < atol:
-                # Find the interval that brackets the root.  Analysis errors
-                # are caught within the bracketing phase and bounds are enforced
-                # at the upper step of the bracket.  If the bracketing phase
-                # exits without error, we should be able to find a step length
-                # within the bracket which drives the inner product to zero.
-                self._bracketing(phi, rec)
+            # Find the interval that brackets the root.  Analysis errors
+            # are caught within the bracketing phase and bounds are enforced
+            # at the upper step of the bracket.  If the bracketing phase
+            # exits without error, we should be able to find a step length
+            # within the bracket which drives the inner product to zero.
+            self._bracketing(phi, rec)
 
+            # If the residual norm at the upper bracket step is less
+            # than atol, we take the upper braket step and exit
+            # without root finding.
+            if not self._iter_get_norm() < atol:
                 # Find the zero of the inner product between the Newton step
                 # and residual vectors within the bracketing interval
                 # using the requested root finding algorithm.
@@ -925,15 +992,50 @@ class InnerProductLS(LinesearchSolver):
 
 
 def _false_position(b, fa, fb, c, fc):
+    """Computes an root of an exponential function approximation using the
+    false position method.
+
+    Parameters
+    ----------
+    b : float
+        Lower bracket step length
+    fa : float
+        Inner product at the upper bracket step
+    fb : float
+        Inner product at the lower bracket step
+    c : float
+        Step length at point 'c' within the bracket
+    fc : float
+        Inner product at point 'c'
+
+    Returns
+    -------
+    float
+        Root of the exponential function approximation
+    """
     return c + (c - b) * np.sign(fb - fa) * fc / np.sqrt(fc ** 2 - fb * fa)
 
 
 def _newton_quadratic(ab, fab, d, fd, k):
-    """Apply Newton-Raphson like steps, using divided differences to approximate f'
-    ab is a real interval [a, b] containing a root,
-    fab holds the real values of f(a), f(b)
-    d is a real number outside [ab, b]
-    k is the number of steps to apply
+    """
+    Apply Newton-Raphson like steps, using divided differences to approximate f'
+
+    Parameters
+    ----------
+    ab : list
+        The step length bracket
+    fab : list
+        Inner product bracket corresponding to the step length bracket
+    d : float
+        Step length of point external to bracket
+    fd : float
+        Inner product of point 'd'
+    k : int
+        Number of Newton-Raphson steps to apply
+    Returns
+    -------
+    float
+        Approximate root of the function f
     """
     a, b = ab
     fa, fb = fab
@@ -962,11 +1064,28 @@ def _newton_quadratic(ab, fab, d, fd, k):
 
 
 def _compute_divided_differences(xvals, fvals, N=None, full=True, forward=True):
-    """Return a matrix of divided differences for the xvals, fvals pairs
-    DD[i, j] = f[x_{i-j}, ..., x_i] for 0 <= j <= i
-    If full is False, just return the main diagonal(or last row):
-      f[a], f[a, b] and f[a, b, c].
-    If forward is False, return f[c], f[b, c], f[a, b, c]."""
+    """
+    Return a matrix of divided differences for the xvals, fvals pairs
+
+    Parameters
+    ----------
+    xvals : list
+        Independent function variables
+    fvals : list
+        Function values
+    N : int, optional
+        Pre-determined length of x-vals, by default None
+    full : bool, optional
+        If full is False, just return the main diagonal(or last row):
+            f[a], f[a, b] and f[a, b, c]., by default True
+    forward : bool, optional
+        If forward is False, return f[c], f[b, c], f[a, b, c], by default True
+
+    Returns
+    -------
+    np.array
+        DD[i, j] = f[x_{i-j}, ..., x_i] for 0 <= j <= i
+    """
     if full:
         if forward:
             xvals = np.asarray(xvals)
@@ -993,9 +1112,25 @@ def _compute_divided_differences(xvals, fvals, N=None, full=True, forward=True):
 
 
 def _interpolated_poly(xvals, fvals, x):
-    """Compute p(x) for the polynomial passing through the specified locations.
+    """
+    Compute p(x) for the polynomial passing through the specified locations.
     Use Neville's algorithm to compute p(x) where p is the minimal degree
-    polynomial passing through the points xvals, fvals"""
+    polynomial passing through the points xvals, fvals
+
+    Parameters
+    ----------
+    xvals : list
+        Independent variables
+    fvals : list
+        Function values for each xval
+    x : list or float
+        Point for which to interpolate p(x)
+
+    Returns
+    -------
+    list or float
+        Value(s) of the interpolated polynomial p(x) at each of the x points
+    """
     xvals = np.asarray(xvals)
     N = len(xvals)
     Q = np.zeros([N, N])
@@ -1012,10 +1147,35 @@ def _interpolated_poly(xvals, fvals, x):
 
 
 def _inverse_poly_zero(a, b, c, d, fa, fb, fc, fd):
-    """Inverse cubic interpolation f-values -> x-values
+    """
+    Inverse cubic interpolation f-values -> x-values
     Given four points (fa, a), (fb, b), (fc, c), (fd, d) with
     fa, fb, fc, fd all distinct, find poly IP(y) through the 4 points
     and compute x=IP(0).
+
+    Parameters
+    ----------
+    a : float
+        Upper bracket step length
+    b : float
+        Lower bracket step length
+    c : float
+        Step length of a point between 'a' and 'b'
+    d : float
+        Step length outside of 'a' and 'b'
+    fa : float
+        Function value at 'a'
+    fb : float
+        Function value at 'b'
+    fc : float
+        Function value at 'c'
+    fd : float
+        Function value at 'd'
+
+    Returns
+    -------
+    list
+        Approximate root value
     """
     return _interpolated_poly([fa, fb, fc, fd], [a, b, c, d], 0)
 
@@ -1031,7 +1191,27 @@ def _notclose(fs, rtol=1e-6, atol=1e-6):
 
 
 def _update_bracket(ab, fab, c, fc):
-    """Update a bracket given (c, fc), return the discarded endpoints."""
+    """Update a bracket given (c, fc), return the discarded endpoints.
+
+    Parameters
+    ----------
+    ab : list
+        step lengths of bracket endpoints
+    fab : list
+        Function values of bracket endpoints
+    c : float
+        Point within the bracket
+    fc : float
+        Function value at point 'c'
+
+    Returns
+    -------
+    tuple(float, float, int)
+        The first two values are the step length and inner product
+        of the old bracket point.  The final point is the index
+        of the bracket point that corresponds to the current
+        position of the state vector.
+    """
     fa, fb = fab
     idx = 0 if np.sign(fa) * np.sign(fc) > 0 else 1
     rx, rfx = ab[idx], fab[idx]
@@ -1130,7 +1310,7 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
 
         # At this point, we normalize d_alpha by alpha to figure out the relative
         # amount that the du vector has to be reduced, then apply the reduction.
-        du *= d_alpha / alpha
+        du *= 1 - d_alpha / alpha
 
 
 def _enforce_bounds_scalar(u, du, alpha, lower_bounds, upper_bounds):
@@ -1174,4 +1354,4 @@ def _enforce_bounds_scalar(u, du, alpha, lower_bounds, upper_bounds):
 
     change = change_lower + change_upper
     u_data += change
-    du -= change / alpha
+    du += change / alpha

@@ -35,7 +35,7 @@ from openmdao.components.vector_magnitude_comp import VectorMagnitudeComp
 from openmdao.solvers.linear.linear_block_gs import LinearBlockGS
 from openmdao.solvers.linear.linear_block_jac import LinearBlockJac
 from openmdao.solvers.linear.direct import DirectSolver
-from openmdao.solvers.linear.linear_active_set import LinearActiveSet
+from openmdao.solvers.linear.linear_active_set import LinearAS
 from openmdao.solvers.linear.petsc_ksp import PETScKrylov
 from openmdao.solvers.linear.linear_runonce import LinearRunOnce
 from openmdao.solvers.linear.scipy_iter_solver import ScipyKrylov
@@ -46,7 +46,7 @@ from openmdao.solvers.nonlinear.broyden import BroydenSolver
 from openmdao.solvers.nonlinear.nonlinear_block_gs import NonlinearBlockGS
 from openmdao.solvers.nonlinear.nonlinear_block_jac import NonlinearBlockJac
 from openmdao.solvers.nonlinear.newton import NewtonSolver
-from openmdao.solvers.nonlinear.active_set import ASNewtonSolver
+from openmdao.solvers.nonlinear.nonlinear_active_set import NonlinearAS
 from openmdao.solvers.nonlinear.nonlinear_runonce import NonlinearRunOnce
 
 # Surrogate Models

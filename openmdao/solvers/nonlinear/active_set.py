@@ -5,7 +5,7 @@ import numpy as np
 import os
 
 from openmdao.core.analysis_error import AnalysisError
-from openmdao.solvers.linesearch.backtracking import ArmijoGoldsteinLS
+from openmdao.solvers.linesearch.backtracking import ActiveSetLS
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
@@ -44,7 +44,7 @@ class ASNewtonSolver(NonlinearSolver):
         self.linear_solver = None
 
         # Slot for linesearch
-        self.linesearch = ArmijoGoldsteinLS()
+        self.linesearch = ActiveSetLS()
 
     def _declare_options(self):
         """

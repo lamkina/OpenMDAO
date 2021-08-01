@@ -469,7 +469,7 @@ class ArmijoGoldsteinLS(LinesearchSolver):
             self._mpi_print(self._iter_count, phi, self.alpha)
 
 
-class ActiveSetLS(NonlinearSolver):
+class ActiveSetLS(LinesearchSolver):
     """
     Backtracking line search that terminates with a sufficient decrease condition
 
@@ -537,7 +537,7 @@ class ActiveSetLS(NonlinearSolver):
         # Initial step length based on the input step length parameter
         u.add_scal_vec(alpha, du)
 
-        self._enforce_bounds(step=du, alpha=alpha)
+        # self._enforce_bounds(step=du, alpha=alpha)
 
         try:
             cache = self._solver_info.save_cache()
@@ -564,21 +564,10 @@ class ActiveSetLS(NonlinearSolver):
         super()._declare_options()
         opt = self.options
         opt["maxiter"] = 5
-        opt.declare(
-            "c",
-            default=0.1,
-            lower=0.0,
-            upper=1.0,
-            desc="Slope parameter for line of "
-            "sufficient decrease. The larger the step, the more decrease is required to "
-            "terminate the line search.",
-        )
         opt.declare("rho", default=0.5, lower=0.0, upper=1.0, desc="Contraction factor.")
         opt.declare("alpha", default=1.0, lower=0.0, desc="Initial line search step.")
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
-        opt.declare(
-            "method", default="Armijo", values=["Armijo", "Goldstein"], desc="Method to calculate stopping condition."
-        )
+        opt.declare("sigma", default=1e-4, desc="Sufficient decrease multiplier")
 
     def _single_iteration(self):
         """
@@ -635,7 +624,7 @@ class ActiveSetLS(NonlinearSolver):
         du = system._vectors["output"]["linear"].asarray()
         fval0 = self._f0
         sigma = self.options["sigma"]
-        return fval <= fval0 - sigma * du.T * (self._u0 - u)
+        return fval <= fval0 - sigma * du.T.dot(self._u0 - u)
 
     def _update_step_length_parameter(self, rho):
         """
@@ -655,7 +644,6 @@ class ActiveSetLS(NonlinearSolver):
         options = self.options
         maxiter = options["maxiter"]
         rho = options["rho"]
-        method = options["method"]
 
         system = self._system()
         u = system._outputs
@@ -666,7 +654,7 @@ class ActiveSetLS(NonlinearSolver):
         phi0 = self._phi0
 
         # Further backtracking if needed.
-        while self._iter_count < maxiter and (not self._stopping_criteria(phi, method) or self._analysis_error_raised):
+        while self._iter_count < maxiter and (not self._stopping_criteria(phi) or self._analysis_error_raised):
 
             with Recording("ActiveSetLS", self._iter_count, self) as rec:
 

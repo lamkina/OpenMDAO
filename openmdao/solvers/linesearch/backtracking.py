@@ -528,7 +528,8 @@ class ActiveSetLS(NonlinearSolver):
         self._u0 = u.asarray(copy=True)
 
         self._run_apply()
-        phi0 = self._line_search_objective()
+        phi0 = self._iter_get_norm()
+        self._f0 = self._line_search_objective()
         if phi0 == 0.0:
             phi0 = 1.0
         self._phi0 = phi0
@@ -632,7 +633,7 @@ class ActiveSetLS(NonlinearSolver):
         system = self._system()
         u = system._outputs.asarray()
         du = system._vectors["output"]["linear"].asarray()
-        fval0 = self._phi0
+        fval0 = self._f0
         sigma = self.options["sigma"]
         return fval <= fval0 - sigma * du.T * (self._u0 - u)
 
@@ -667,7 +668,7 @@ class ActiveSetLS(NonlinearSolver):
         # Further backtracking if needed.
         while self._iter_count < maxiter and (not self._stopping_criteria(phi, method) or self._analysis_error_raised):
 
-            with Recording("ArmijoGoldsteinLS", self._iter_count, self) as rec:
+            with Recording("ActiveSetLS", self._iter_count, self) as rec:
 
                 if self._iter_count > 0:
                     alpha_old = self.alpha
@@ -680,7 +681,7 @@ class ActiveSetLS(NonlinearSolver):
                     self._single_iteration()
                     self._iter_count += 1
 
-                    phi = self._line_search_objective()
+                    phi = self._iter_get_norm()
 
                     # Save the norm values in the context manager so they can also be recorded.
                     rec.abs = phi

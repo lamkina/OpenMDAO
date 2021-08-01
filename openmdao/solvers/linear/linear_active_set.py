@@ -165,7 +165,7 @@ def format_nan_error(system, matrix):
     return msg.format(system.msginfo, ", ".join(varnames))
 
 
-class LinearActiveSet(LinearSolver):
+class LinearAS(LinearSolver):
     """
     LinearSolver that uses linalg.solve or LU factor/solve.
     """
@@ -272,10 +272,6 @@ class LinearActiveSet(LinearSolver):
         if self._assembled_jac is not None:
             matrix = self._assembled_jac._int_mtx._matrix
 
-            # Create an array copy of the Jacobian so that we don't alter the
-            # assembled Jacobian
-            mtx_copy = matrix.toarray().copy()
-
             if matrix is None:
                 # this happens if we're not rank 0 when using owned_sizes
                 self._lu = self._lup = None
@@ -283,6 +279,9 @@ class LinearActiveSet(LinearSolver):
             # Perform dense or sparse lu factorization.
             elif isinstance(matrix, csc_matrix):
                 try:
+                    mtx_copy = matrix.toarray().copy()
+                    print(f"Ak: {active_set}")
+                    print(f"Ik: {inactive_set}")
                     mtx_copy[np.ix_(active_set, inactive_set)] = 0.0
                     mtx_copy[np.ix_(active_set, active_set)] = 1.0
                     mtx_sparse = csc_matrix(mtx_copy)
@@ -300,6 +299,7 @@ class LinearActiveSet(LinearSolver):
                     if self.options["err_on_singular"]:
                         warnings.simplefilter("error", RuntimeWarning)
                     try:
+                        mtx_copy = matrix.copy()
                         # Build new matrix for the active set method using the Jacobian, inactive, and active sets
                         mtx_copy[np.ix_(active_set, inactive_set)] = 0.0
                         mtx_copy[np.ix_(active_set, active_set)] = 1.0
@@ -394,7 +394,11 @@ class LinearActiveSet(LinearSolver):
 
         # matrix-vector-product generated jacobians are scaled.
         else:
+
             rhs_vec = np.zeros(len(b_vec))
-            rhs_vec[active_set] = d_active
+            if active_set.size > 0:
+                rhs_vec[active_set] = d_active
+
             rhs_vec[inactive_set] = b_vec[inactive_set]
             x_vec[:] = scipy.linalg.lu_solve(self._lup, rhs_vec, trans=trans_lu)
+

@@ -6,7 +6,7 @@ import os
 from scipy.sparse import csc_matrix
 
 from openmdao.core.analysis_error import AnalysisError
-from openmdao.solvers.linesearch.backtracking import ActiveSetLS
+from openmdao.solvers.linesearch.backtracking import ActiveSetLS, ArmijoGoldsteinLS
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
@@ -212,12 +212,15 @@ class NonlinearAS(NonlinearSolver):
         """
         return self.options["solve_subsystems"] and self._iter_count <= self.options["max_sub_solves"]
 
-    def _linearize(self):
+    def _linearize(self, full_flag=False):
         """
         Perform any required linearization operations such as matrix factorization.
         """
         if self.linear_solver is not None:
-            self.linear_solver._linearize(self._inactive_set, self._active_set)
+            if not full_flag:
+                self.linear_solver._linearize_reduced(self._inactive_set, self._active_set)
+            else:
+                self.linear_solver._linearize_full()
 
         if self.linesearch is not None:
             self.linesearch._linearize()
@@ -263,15 +266,41 @@ class NonlinearAS(NonlinearSolver):
                 self._solver_info.pop()
 
         self._run_apply()
-        norm = self._iter_get_norm()
+        f0, norm = self._objective()
 
         norm0 = norm if norm != 0.0 else 1.0
-        return norm0, norm
+        return norm0, norm, f0
+
+    def _projected_gradient(self, my_asm_jac, do_subsolve):
+        system = self._system()
+        # Modify the newton step to be the projected gradient of the
+        # objective f(x).
+        # The projected gradient is the matrix-vector product of the
+        # transpose of the Jacobian and the residuals vector
+        residuals = system._vectors["residual"]["linear"]
+        residuals *= -1
+        mtx = my_asm_jac._int_mtx._matrix
+
+        # Check if Jacobian is sparse so we can turn it into an array
+        if isinstance(mtx, csc_matrix):
+            mtx = mtx.toarray()
+
+        proj_grad = mtx.T.dot(residuals.asarray())
+
+        # Set the linear output vector to the negative projected
+        # gradient to search along the steepest descent direction
+        system._vectors["output"]["linear"].set_val(np.asarray(-proj_grad).reshape(-1))
+
+        # Use a backtracking linesearch along the projected gradient
+        # direction
+        self.linesearch._do_subsolve = do_subsolve
+        self.linesearch.solve()
 
     def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
         """
+        step_type = "N"
         system = self._system()
         options = self.options
         delta = options["delta"]
@@ -283,8 +312,6 @@ class NonlinearAS(NonlinearSolver):
         do_sub_ln = self.linear_solver._linearize_children()
 
         f0, phi0 = self._objective()
-        print("=" * 100)
-        print(f"f0: {f0}")
 
         # Set the active set tolerance and store for iteration loop
         self._delta_k = delta_k = min(delta, c * phi0 ** 0.5)
@@ -298,7 +325,6 @@ class NonlinearAS(NonlinearSolver):
         upper_mask = self._upper_bounds - u <= delta_k
         active_mask = np.logical_or(lower_mask, upper_mask)
         self._active_set = np.where(active_mask)[0]
-        print(f"ACTIVE SET: {self._active_set}")
 
         # The inactive set is the indices not in the active set
         inactive_mask = np.logical_and(np.logical_not(lower_mask), np.logical_not(upper_mask))
@@ -327,89 +353,59 @@ class NonlinearAS(NonlinearSolver):
 
         # Set up the inactive/active set linear system
         try:
-            self._linearize()
+            # If all states are in the active set, then don't solve the
+            # linear system and go straight to a projected gradient step
+            if self._inactive_set.size > 0:
+                self._linearize()
 
-            # Solve the linear system
-            self.linear_solver.solve("fwd", self._inactive_set, self._active_set, d_active)
+                # Solve the linear system
+                self.linear_solver.solve_reduced("fwd", self._inactive_set, self._active_set, d_active)
 
-            # Perform feasibility safegaurd (simple vector bounds enforcement)
-            u = system._outputs
-            du = system._vectors["output"]["linear"]
-            tau1 = (self._lower_bounds[du.asarray() < 0] - u.asarray()[du.asarray() < 0]) / du.asarray()[
-                du.asarray() < 0
-            ]
-            tau2 = (self._upper_bounds[du.asarray() > 0] - u.asarray()[du.asarray() > 0]) / du.asarray()[
-                du.asarray() > 0
-            ]
-            if not tau1.size > 0:
-                tau1 = np.inf
-            if not tau2.size > 0:
-                tau2 = np.inf
+                # Perform feasibility safegaurd (simple vector bounds enforcement)
+                u = system._outputs
+                du = system._vectors["output"]["linear"]
+                tau1 = (self._lower_bounds[du.asarray() < 0] - u.asarray()[du.asarray() < 0]) / du.asarray()[
+                    du.asarray() < 0
+                ]
+                tau2 = (self._upper_bounds[du.asarray() > 0] - u.asarray()[du.asarray() > 0]) / du.asarray()[
+                    du.asarray() > 0
+                ]
+                if not tau1.size > 0:
+                    tau1 = np.inf
+                if not tau2.size > 0:
+                    tau2 = np.inf
 
-            tau = np.min([np.min(tau1), np.min(tau2)])
+                tau_k = np.min([np.min(tau1), np.min(tau2)])
 
-            # Move states and check sufficient decrease condition
-            u.add_scal_vec(tau, du)
-            if do_subsolve:
-                self._gs_iter()
-            self._run_apply()
+                tau = np.min([1.0, tau_k])
 
-            fk, _ = self._objective()
+                # Move states and check sufficient decrease condition
+                if not np.isinf(tau):
+                    u.add_scal_vec(tau, du)
+                    if do_subsolve:
+                        self._gs_iter()
+                    self._run_apply()
 
-            if not fk < gamma * f0:
-                # Roll back states to previous point
-                u.add_scal_vec(-tau, du)
-                if do_subsolve:
-                    self._gs_iter()
-                self._run_apply()
+                fk, _ = self._objective()
 
-                # Modify the newton step to be the projected gradient of the
-                # objective f(x).
-                # The projected gradient is the matrix-vector product of the
-                # transpose of the Jacobian and the residuals vector
-                residuals = system._vectors["residual"]["linear"]
-                residuals *= -1
-                mtx = my_asm_jac._int_mtx._matrix
+                if not fk < gamma * f0:
+                    # Roll back states to previous point
+                    u.add_scal_vec(-tau, du)
+                    if do_subsolve:
+                        self._gs_iter()
+                    self._run_apply()
 
-                # Check if Jacobian is sparse so we can turn it into an array
-                if isinstance(mtx, csc_matrix):
-                    mtx = mtx.toarray()
+                    step_type = "PG1"
+                    self._projected_gradient(my_asm_jac, do_subsolve)
+            else:
+                step_type = "PG2"
+                self._projected_gradient(my_asm_jac, do_subsolve)
 
-                proj_grad = mtx.T.dot(residuals.asarray())
-                print(f"PG NO ERROR: {-proj_grad}")
-
-                # Set the linear output vector to the negative projected
-                # gradient to search along the steepest descent direction
-                system._vectors["output"]["linear"].set_val(np.asarray(-proj_grad).reshape(-1))
-
-                # Use a backtracking linesearch along the projected gradient
-                # direction
-                self.linesearch._do_subsolve = do_subsolve
-                self.linesearch.solve()
         except RuntimeError:
-            # Modify the newton step to be the projected gradient of the
-            # objective f(x).
-            # The projected gradient is the matrix-vector product of the
-            # transpose of the Jacobian and the residuals vector
-            residuals = system._vectors["residual"]["linear"]
-            residuals *= -1
-            mtx = my_asm_jac._int_mtx._matrix
+            step_type = "PG3"
+            self._projected_gradient(my_asm_jac, do_subsolve)
 
-            # Check if Jacobian is sparse so we can turn it into an array
-            if isinstance(mtx, csc_matrix):
-                mtx = mtx.toarray()
-
-            proj_grad = mtx.T.dot(residuals.asarray())
-            print(f"PG ERROR: {-proj_grad}")
-
-            # Set the linear output vector to the negative projected
-            # gradient to search along the steepest descent direction
-            system._vectors["output"]["linear"].set_val(np.asarray(-proj_grad).reshape(-1))
-
-            # Use a backtracking linesearch along the projected gradient
-            # direction
-            self.linesearch._do_subsolve = do_subsolve
-            self.linesearch.solve()
+        # print(step_type)
 
         self._solver_info.pop()
 
@@ -420,10 +416,124 @@ class NonlinearAS(NonlinearSolver):
                 self._gs_iter()
                 self._solver_info.pop()
 
-        print(f"STATES: {u}")
-        print("=" * 100)
         # Enable local fd
         system._owns_approx_jac = approx_status
+
+    def _solve(self):
+        """
+        Run the iterative solver.
+        """
+        maxiter = self.options["maxiter"]
+        atol = self.options["atol"]
+        rtol = self.options["rtol"]
+        iprint = self.options["iprint"]
+        stall_limit = self.options["stall_limit"]
+        stall_tol = self.options["stall_tol"]
+
+        self._mpi_print_header()
+
+        self._iter_count = 0
+        norm0, norm, f0 = self._iter_initialize()
+
+        self._norm0 = norm0
+        self._f0 = fk = f0
+
+        self._mpi_print(self._iter_count, f0, f0 / f0)
+
+        stalled = False
+        stall_count = 0
+        if stall_limit > 0:
+            stall_norm = f0
+
+        while self._iter_count < maxiter and fk > atol and fk / f0 > rtol and not stalled:
+            with Recording(type(self).__name__, self._iter_count, self) as rec:
+
+                if stall_count == 3 and not self.linesearch.options["print_bound_enforce"]:
+
+                    self.linesearch.options["print_bound_enforce"] = True
+
+                    if self._system().pathname:
+                        pathname = f"{self._system().pathname}."
+                    else:
+                        pathname = ""
+
+                    msg = (
+                        f"Your model has stalled three times and may be violating the bounds. "
+                        f"In the future, turn on print_bound_enforce in your solver options "
+                        f"here: \n{pathname}nonlinear_solver.linesearch.options"
+                        f"['print_bound_enforce']=True. "
+                        f"\nThe bound(s) being violated now are:\n"
+                    )
+                    issue_warning(msg, category=SolverWarning)
+
+                    self._single_iteration()
+                    self.linesearch.options["print_bound_enforce"] = False
+                else:
+                    self._single_iteration()
+
+                self._iter_count += 1
+                self._run_apply()
+                fk, _ = self._objective()
+
+                # Save the norm values in the context manager so they can also be recorded.
+                rec.abs = fk
+                if f0 == 0:
+                    f0 = 1
+                rec.rel = fk / f0
+
+                # Check if convergence is stalled.
+                if stall_limit > 0:
+                    rel_norm = rec.rel
+                    norm_diff = np.abs(stall_norm - rel_norm)
+                    if norm_diff <= stall_tol:
+                        stall_count += 1
+                        if stall_count >= stall_limit:
+                            stalled = True
+                    else:
+                        stall_count = 0
+                        stall_norm = rel_norm
+
+            self._mpi_print(self._iter_count, fk, fk / f0)
+
+        system = self._system()
+
+        # flag for the print statements. we only print on root if USE_PROC_FILES is not set to True
+        print_flag = system.comm.rank == 0 or os.environ.get("USE_PROC_FILES")
+
+        prefix = self._solver_info.prefix + self.SOLVER
+
+        # Solver terminated early because a Nan in the norm doesn't satisfy the while-loop
+        # conditionals.
+        if np.isinf(fk) or np.isnan(fk):
+            msg = "Solver '{}' on system '{}': residuals contain 'inf' or 'NaN' after {} " + "iterations."
+            if iprint > -1 and print_flag:
+                print(prefix + msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+            # Raise AnalysisError if requested.
+            if self.options["err_on_non_converge"]:
+                raise AnalysisError(msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+        # Solver hit maxiter without meeting desired tolerances.
+        # Or solver stalled.
+        elif (fk > atol and fk / f0 > rtol) or stalled:
+
+            if stalled:
+                msg = "Solver '{}' on system '{}' stalled after {} iterations."
+            else:
+                msg = "Solver '{}' on system '{}' failed to converge in {} iterations."
+
+            if iprint > -1 and print_flag:
+                print(prefix + msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+            # Raise AnalysisError if requested.
+            if self.options["err_on_non_converge"]:
+                raise AnalysisError(msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+        # Solver converged
+        elif iprint == 1 and print_flag:
+            print(prefix + " Converged in {} iterations".format(self._iter_count))
+        elif iprint == 2 and print_flag:
+            print(prefix + " Converged")
 
     def _set_complex_step_mode(self, active):
         """

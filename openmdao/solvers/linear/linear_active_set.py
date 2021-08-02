@@ -257,13 +257,86 @@ class LinearAS(LinearSolver):
 
         return mtx
 
-    def _linearize(self, inactive_set, active_set):
+    def _linearize_full(self):
+        """
+        Perform factorization on the full Newton system.
+        """
+        system = self._system()
+        nproc = system.comm.size
+
+        if self._assembled_jac is not None:
+            matrix = self._assembled_jac._int_mtx._matrix
+
+            if matrix is None:
+                # this happens if we're not rank 0 when using owned_sizes
+                self._lu = self._lup = None
+
+            # Perform dense or sparse lu factorization.
+            elif isinstance(matrix, csc_matrix):
+                try:
+                    self._lu = scipy.sparse.linalg.splu(matrix)
+                except RuntimeError as err:
+                    if "exactly singular" in str(err):
+                        raise RuntimeError(format_singular_error(system, matrix))
+                    else:
+                        raise err
+
+            elif isinstance(matrix, np.ndarray):  # dense
+                # During LU decomposition, detect singularities and warn user.
+                with warnings.catch_warnings():
+                    if self.options["err_on_singular"]:
+                        warnings.simplefilter("error", RuntimeWarning)
+                    try:
+                        self._lup = scipy.linalg.lu_factor(matrix)
+                    except RuntimeWarning as err:
+                        raise RuntimeError(format_singular_error(system, matrix))
+
+                    # NaN in matrix.
+                    except ValueError as err:
+                        raise RuntimeError(format_nan_error(system, matrix))
+
+            # Note: calling scipy.sparse.linalg.splu on a COO actually transposes
+            # the matrix during conversion to csc prior to LU decomp, so we can't use COO.
+            else:
+                raise RuntimeError(
+                    "Direct solver not implemented for matrix type %s"
+                    " in %s." % (type(self._assembled_jac._int_mtx), system.msginfo)
+                )
+        else:
+            if nproc > 1:
+                raise RuntimeError(
+                    "DirectSolvers without an assembled jacobian are not supported "
+                    "when running under MPI if comm.size > 1."
+                )
+
+            mtx = self._build_mtx()
+
+            # During LU decomposition, detect singularities and warn user.
+            with warnings.catch_warnings():
+
+                if self.options["err_on_singular"]:
+                    warnings.simplefilter("error", RuntimeWarning)
+
+                try:
+                    self._lup = scipy.linalg.lu_factor(mtx)
+
+                except RuntimeWarning as err:
+                    raise RuntimeError(format_singular_error(system, mtx))
+
+                # NaN in matrix.
+                except ValueError as err:
+                    raise RuntimeError(format_nan_error(system, mtx))
+
+    def _linearize_reduced(self, inactive_set, active_set):
         """Perform factorization on the square inactive set submatrix of the Jacobian.
 
         Parameters
         ----------
         inactive_set : ndarray
             Indices of the states that are not close to bounds
+
+        active_set: ndarray
+            Indices of the states that are close to the bounds
         """
         # TODO: Remove Jacobian copies and modify Jacobian directly to save memory
         system = self._system()
@@ -345,7 +418,7 @@ class LinearAS(LinearSolver):
                 except ValueError:
                     raise RuntimeError(format_nan_error(system, mtx))
 
-    def solve(self, mode, inactive_set, active_set, d_active, rel_systems=None):
+    def solve_reduced(self, mode, inactive_set, active_set, d_active, rel_systems=None):
         """
         Run the solver.
 
@@ -411,3 +484,48 @@ class LinearAS(LinearSolver):
                 temp[active_set] = d_active
             x_vec[:] = temp
 
+    def solve_full(self, mode, rel_systems=None):
+        """
+        Run the solver.
+
+        Parameters
+        ----------
+        mode : str
+            'fwd' or 'rev'.
+        rel_systems : set of str
+            Names of systems relevant to the current solve.
+        """
+        system = self._system()
+        iproc = system.comm.rank
+        nproc = system.comm.size
+
+        d_residuals = system._vectors["residual"]["linear"]
+        d_outputs = system._vectors["output"]["linear"]
+
+        # assign x and b vectors based on mode
+        if mode == "fwd":
+            x_vec = d_outputs.asarray()
+            b_vec = d_residuals.asarray()
+            trans_lu = 0
+            trans_splu = "N"
+        else:  # rev
+            x_vec = d_residuals.asarray()
+            b_vec = d_outputs.asarray()
+            trans_lu = 1
+            trans_splu = "T"
+
+        # AssembledJacobians are unscaled.
+        if self._assembled_jac is not None:
+            full_b = tmp = b_vec
+
+            with system._unscaled_context(outputs=[d_outputs], residuals=[d_residuals]):
+                if isinstance(self._assembled_jac._int_mtx, DenseMatrix):
+                    arr = scipy.linalg.lu_solve(self._lup, full_b, trans=trans_lu)
+                else:
+                    arr = self._lu.solve(full_b, trans_splu)
+
+                x_vec[:] = arr
+
+        # matrix-vector-product generated jacobians are scaled.
+        else:
+            x_vec[:] = scipy.linalg.lu_solve(self._lup, b_vec, trans=trans_lu)

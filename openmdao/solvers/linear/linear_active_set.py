@@ -280,11 +280,9 @@ class LinearAS(LinearSolver):
             elif isinstance(matrix, csc_matrix):
                 try:
                     mtx_copy = matrix.toarray().copy()
-                    print(f"Ak: {active_set}")
-                    print(f"Ik: {inactive_set}")
-                    mtx_copy[np.ix_(active_set, inactive_set)] = 0.0
-                    mtx_copy[np.ix_(active_set, active_set)] = 1.0
-                    mtx_sparse = csc_matrix(mtx_copy)
+                    mtx_ik_ik = mtx_copy[np.ix_(inactive_set, inactive_set)]
+                    self._mtx_ik_ak = mtx_copy[np.ix_(inactive_set, active_set)]
+                    mtx_sparse = csc_matrix(mtx_ik_ik)
                     self._lu = scipy.sparse.linalg.splu(mtx_sparse)
 
                 except RuntimeError as err:
@@ -301,9 +299,9 @@ class LinearAS(LinearSolver):
                     try:
                         mtx_copy = matrix.copy()
                         # Build new matrix for the active set method using the Jacobian, inactive, and active sets
-                        mtx_copy[np.ix_(active_set, inactive_set)] = 0.0
-                        mtx_copy[np.ix_(active_set, active_set)] = 1.0
-                        self._lup = scipy.linalg.lu_factor(mtx_copy)
+                        mtx_ik_ik = mtx_copy[np.ix_(inactive_set, inactive_set)]
+                        self._mtx_ik_ak = mtx_copy[np.ix_(inactive_set, active_set)]
+                        self._lup = scipy.linalg.lu_factor(mtx_ik_ik)
 
                     except RuntimeWarning:
                         raise RuntimeError(format_singular_error(system, matrix))
@@ -336,9 +334,9 @@ class LinearAS(LinearSolver):
                     warnings.simplefilter("error", RuntimeWarning)
 
                 try:
-                    mtx_copy[np.ix_(active_set, inactive_set)] = 0.0
-                    mtx_copy[np.ix_(active_set, active_set)] = 1.0
-                    self._lup = scipy.linalg.lu_factor(mtx_copy)
+                    mtx_ik_ik = mtx_copy[np.ix_(inactive_set, inactive_set)]
+                    self._mtx_ik_ak = mtx_copy[np.ix_(inactive_set, active_set)]
+                    self._lup = scipy.linalg.lu_factor(mtx_ik_ik)
 
                 except RuntimeWarning:
                     raise RuntimeError(format_singular_error(system, mtx))
@@ -380,9 +378,10 @@ class LinearAS(LinearSolver):
         # Assembled Jacobians are unscaled.
         if self._assembled_jac is not None:
             # Build the right hand side of the linear system
-            rhs_vec = np.zeros(len(b_vec))
-            rhs_vec[active_set] = d_active
-            rhs_vec[inactive_set] = b_vec[inactive_set]
+            if active_set.size > 0:
+                rhs_vec = b_vec[inactive_set] - self._mtx_ik_ak.dot(d_active)
+            else:
+                rhs_vec = b_vec
 
             with system._unscaled_context(outputs=[d_outputs], residuals=[d_residuals]):
                 if isinstance(self._assembled_jac._int_mtx, DenseMatrix):
@@ -390,15 +389,25 @@ class LinearAS(LinearSolver):
                 else:
                     arr = self._lu.solve(rhs_vec, trans_splu)
 
-                x_vec[:] = arr
+                temp = np.zeros(len(x_vec))
+                temp[inactive_set] = arr
+                if active_set.size > 0:
+                    temp[active_set] = d_active
+                x_vec[:] = temp
 
         # matrix-vector-product generated jacobians are scaled.
         else:
-
-            rhs_vec = np.zeros(len(b_vec))
             if active_set.size > 0:
-                rhs_vec[active_set] = d_active
+                rhs_vec = b_vec[inactive_set] - self._mtx_ik_ak.dot(d_active)
+            else:
+                rhs_vec = b_vec
 
             rhs_vec[inactive_set] = b_vec[inactive_set]
-            x_vec[:] = scipy.linalg.lu_solve(self._lup, rhs_vec, trans=trans_lu)
+            arr = scipy.linalg.lu_solve(self._lup, rhs_vec, trans=trans_lu)
+
+            temp = np.zeros(len(x_vec))
+            temp[inactive_set] = arr
+            if active_set.size > 0:
+                temp[active_set] = d_active
+            x_vec[:] = temp
 

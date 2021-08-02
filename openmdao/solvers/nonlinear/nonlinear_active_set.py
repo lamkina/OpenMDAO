@@ -419,6 +419,8 @@ class NonlinearAS(NonlinearSolver):
                 self._solver_info.append_solver()
                 self._gs_iter()
                 self._solver_info.pop()
+
+        print(f"STATES: {u}")
         print("=" * 100)
         # Enable local fd
         system._owns_approx_jac = approx_status

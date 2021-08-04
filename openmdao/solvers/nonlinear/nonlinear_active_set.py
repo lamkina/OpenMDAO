@@ -285,11 +285,11 @@ class NonlinearAS(NonlinearSolver):
         if isinstance(mtx, csc_matrix):
             mtx = mtx.toarray()
 
-        proj_grad = mtx.T.dot(residuals.asarray())
+        proj_grad = -mtx.T.dot(residuals.asarray())
 
         # Set the linear output vector to the negative projected
         # gradient to search along the steepest descent direction
-        system._vectors["output"]["linear"].set_val(np.asarray(-proj_grad).reshape(-1))
+        system._vectors["output"]["linear"].set_val(np.asarray(proj_grad).reshape(-1))
 
         # Use a backtracking linesearch along the projected gradient
         # direction
@@ -405,7 +405,7 @@ class NonlinearAS(NonlinearSolver):
             step_type = "PG3"
             self._projected_gradient(my_asm_jac, do_subsolve)
 
-        # print(step_type)
+        print(step_type)
 
         self._solver_info.pop()
 

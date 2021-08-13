@@ -2,10 +2,14 @@
 
 
 import numpy as np
+import sys
 
-from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
+from openmdao.solvers.linesearch.interior_point_linesearch import InteriorPointLS
+from openmdao.solvers.linear.linear_interior_point import LinearIP
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
+from openmdao.warnings import issue_warning, SolverWarning
+from openmdao.core.analysis_error import AnalysisError
 from openmdao.utils.mpi import MPI
 
 
@@ -24,7 +28,7 @@ class NonlinearIP(NonlinearSolver):
         Line search algorithm. Default is None for no line search.
     """
 
-    SOLVER = "NL: Newton"
+    SOLVER = "NL: Interior-Point"
 
     def __init__(self, **kwargs):
         """
@@ -38,14 +42,21 @@ class NonlinearIP(NonlinearSolver):
         super().__init__(**kwargs)
 
         # Slot for linear solver
-        self.linear_solver = None
+        self.linear_solver = LinearIP(assemble_jac=True)
+
+        self._lower_bounds = None
+        self._upper_bounds = None
 
         # Slot for linesearch
-        self.linesearch = BoundsEnforceLS()
+        self.linesearch = InteriorPointLS()
 
-        self._w_arr = None
-        self._v_arr = None
+        self._w = None
+        self._v = None
+        self._v_output_linear = None
+        self._v_output_linear = None
+
         self._n = None
+        self._mu = 1.0
 
     def _declare_options(self):
         """
@@ -126,23 +137,26 @@ class NonlinearIP(NonlinearSolver):
 
                 if var_lower is not None:
                     if self._lower_bounds is None:
-                        self._lower_bounds = np.full(len(system._outputs), -np.inf)
+                        self._lower_bounds = np.full(len(system._outputs), -1e10)
                     if not np.isscalar(var_lower):
                         var_lower = var_lower.ravel()
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
+                else:
+                    self._upper_bounds = np.full(len(system._outputs), -1e10)
 
                 if var_upper is not None:
                     if self._upper_bounds is None:
-                        self._upper_bounds = np.full(len(system._outputs), np.inf)
+                        self._upper_bounds = np.full(len(system._outputs), 1e10)
                     if not np.isscalar(var_upper):
                         var_upper = var_upper.ravel()
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
                 else:
-                    self._upper_bounds = np.full(len(system._outputs), np.inf)
+                    self._upper_bounds = np.full(len(system._outputs), 1e10)
 
                 start = end
         else:
-            self._lower_bounds = self._upper_bounds = None
+            self._lower_bounds = np.full(len(system._outputs), -1e10)
+            self._upper_bounds = np.full(len(system._outputs), 1e10)
 
     def _assembled_jac_solver_iter(self):
         """
@@ -208,18 +222,15 @@ class NonlinearIP(NonlinearSolver):
         """
         Perform any required linearization operations such as matrix factorization.
         """
-        # Get the system
-        system = self._system()
 
         # Create diagonal matrices using states, MCP vars, and bounds
-        X = np.diag(system._outputs.asarray())
-        W = np.diag(self._w_arr)
-        V = np.diag(self._v_arr)
+        W = np.diag(self._w)
+        V = np.diag(self._v)
         U = np.diag(self._upper_bounds)
         L = np.diag(self._lower_bounds)
 
         if self.linear_solver is not None:
-            self.linear_solver._linearize(X, W, V, L, U)
+            self.linear_solver._linearize(W, V, L, U)
 
         if self.linesearch is not None:
             self.linesearch._linearize()
@@ -265,10 +276,13 @@ class NonlinearIP(NonlinearSolver):
 
         # Initialize the w and v vectors for the mixed complementarity problem
         u = system._outputs.asarray()
-        self._n = u.size
+        self._n = n = u.size  # Size of the state vector
 
-        self._v_arr = np.ones(self._n)
-        self._w_arr = np.ones(self._n)
+        self._v = np.full(n, 1.0)
+        self._w = np.full(n, 1.0)
+
+        self._v_output_linear = np.ones(n)
+        self._w_output_linear = np.ones(n)
 
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
@@ -279,15 +293,15 @@ class NonlinearIP(NonlinearSolver):
 
         # Create diagonal matrices using states, MCP vars, and bounds
         X = np.diag(system._outputs.asarray())
-        W = np.diag(self._w_arr)
-        V = np.diag(self._v_arr)
+        W = np.diag(self._w)
+        V = np.diag(self._v)
         U = np.diag(self._upper_bounds)
         L = np.diag(self._lower_bounds)
 
         # Compute L2 norm squared terms
         L2_norm_1 = np.linalg.norm((X - L).dot(W).dot(np.ones(len(self._n)).reshape((self._n, 1)))) ** 2
         L2_norm_2 = np.linalg.norm((U - X).dot(V).dot(np.ones(len(self._n)).reshape((self._n, 1)))) ** 2
-        L2_norm_3 = np.linalg.norm(system._residuals.asarray() - self._w_arr + self._v_arr) ** 2
+        L2_norm_3 = np.linalg.norm(system._residuals.asarray() - self._w + self._v) ** 2
 
         # Compose merit function
         phi = L2_norm_1 + L2_norm_2 + L2_norm_3
@@ -307,16 +321,16 @@ class NonlinearIP(NonlinearSolver):
         # Get the states
         u = system._outputs.asarray()
 
-        # Compute the penalty parameter
-        mu = (
-            sigma
-            * ((u - self._lower_bounds).dot(self._w_arr) + (self._upper_bounds - u).dot(self._v_arr))
-            / (2 * self._n)
+        # Update the penalty parameter
+        self._mu = (
+            sigma * ((u - self._lower_bounds).dot(self._w) + (self._upper_bounds - u).dot(self._v)) / (2 * self._n)
         )
 
         # Disable local fd
         approx_status = system._owns_approx_jac
         system._owns_approx_jac = False
+
+        system._vectors["residual"]["linear"].set_vec(system._residuals)
 
         my_asm_jac = self.linear_solver._assembled_jac
 
@@ -324,15 +338,21 @@ class NonlinearIP(NonlinearSolver):
         if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
             my_asm_jac._update(system)
 
+        # Set up the interior-point linear system
         self._linearize()
 
-        self.linear_solver.solve("fwd")
+        # Solve the linear system with an LU decomp
+        W = np.diag(self._w)
+        V = np.diag(self._v)
+        U = np.diag(self._upper_bounds)
+        L = np.diag(self._lower_bounds)
 
-        if self.linesearch:
-            self.linesearch._do_subsolve = do_subsolve
-            self.linesearch.solve()
-        else:
-            system._outputs += system._vectors["output"]["linear"]
+        self.linear_solver.solve(
+            "fwd", W, V, L, U, self._v, self._w, self._v_output_linear, self._w_output_linear, self._mu
+        )
+
+        self.linesearch._do_subsolve = do_subsolve
+        self.linesearch.solve(self._w, self._v, self._w_output_linear, self._v_output_linear, self._mu)
 
         self._solver_info.pop()
 
@@ -345,6 +365,121 @@ class NonlinearIP(NonlinearSolver):
 
         # Enable local fd
         system._owns_approx_jac = approx_status
+
+    def _solve(self):
+        """
+            Run the iterative solver.
+            """
+        maxiter = self.options["maxiter"]
+        atol = self.options["atol"]
+        rtol = self.options["rtol"]
+        iprint = self.options["iprint"]
+        stall_limit = self.options["stall_limit"]
+        stall_tol = self.options["stall_tol"]
+
+        self._mpi_print_header()
+
+        self._iter_count = 0
+        norm0, norm = self._iter_initialize()
+
+        self._norm0 = norm0
+
+        self._mpi_print(self._iter_count, norm, norm / norm0)
+
+        stalled = False
+        stall_count = 0
+        if stall_limit > 0:
+            stall_norm = norm0
+
+        while self._iter_count < maxiter and norm > atol and norm / norm0 > rtol and not stalled:
+            with Recording(type(self).__name__, self._iter_count, self) as rec:
+
+                if stall_count == 3 and not self.linesearch.options["print_bound_enforce"]:
+
+                    self.linesearch.options["print_bound_enforce"] = True
+
+                    if self._system().pathname:
+                        pathname = f"{self._system().pathname}."
+                    else:
+                        pathname = ""
+
+                    msg = (
+                        f"Your model has stalled three times and may be violating the bounds. "
+                        f"In the future, turn on print_bound_enforce in your solver options "
+                        f"here: \n{pathname}nonlinear_solver.linesearch.options"
+                        f"['print_bound_enforce']=True. "
+                        f"\nThe bound(s) being violated now are:\n"
+                    )
+                    issue_warning(msg, category=SolverWarning)
+
+                    self._single_iteration()
+                    self.linesearch.options["print_bound_enforce"] = False
+                else:
+                    self._single_iteration()
+
+                self._iter_count += 1
+                self._run_apply()
+                norm = self._iter_get_norm()
+
+                # Save the norm values in the context manager so they can also be recorded.
+                rec.abs = norm
+                if norm0 == 0:
+                    norm0 = 1
+                rec.rel = norm / norm0
+
+                # Check if convergence is stalled.
+                if stall_limit > 0:
+                    rel_norm = rec.rel
+                    norm_diff = np.abs(stall_norm - rel_norm)
+                    if norm_diff <= stall_tol:
+                        stall_count += 1
+                        if stall_count >= stall_limit:
+                            stalled = True
+                    else:
+                        stall_count = 0
+                        stall_norm = rel_norm
+
+            self._mpi_print(self._iter_count, norm, norm / norm0)
+
+        system = self._system()
+
+        # flag for the print statements. we only print on root if USE_PROC_FILES is not set to True
+        print_flag = system.comm.rank == 0 or os.environ.get("USE_PROC_FILES")
+
+        prefix = self._solver_info.prefix + self.SOLVER
+
+        # Solver terminated early because a Nan in the norm doesn't satisfy the while-loop
+        # conditionals.
+        if np.isinf(norm) or np.isnan(norm):
+            msg = "Solver '{}' on system '{}': residuals contain 'inf' or 'NaN' after {} " + "iterations."
+            if iprint > -1 and print_flag:
+                print(prefix + msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+            # Raise AnalysisError if requested.
+            if self.options["err_on_non_converge"]:
+                raise AnalysisError(msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+        # Solver hit maxiter without meeting desired tolerances.
+        # Or solver stalled.
+        elif (norm > atol and norm / norm0 > rtol) or stalled:
+
+            if stalled:
+                msg = "Solver '{}' on system '{}' stalled after {} iterations."
+            else:
+                msg = "Solver '{}' on system '{}' failed to converge in {} iterations."
+
+            if iprint > -1 and print_flag:
+                print(prefix + msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+            # Raise AnalysisError if requested.
+            if self.options["err_on_non_converge"]:
+                raise AnalysisError(msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+        # Solver converged
+        elif iprint == 1 and print_flag:
+            print(prefix + " Converged in {} iterations".format(self._iter_count))
+        elif iprint == 2 and print_flag:
+            print(prefix + " Converged")
 
     def _set_complex_step_mode(self, active):
         """

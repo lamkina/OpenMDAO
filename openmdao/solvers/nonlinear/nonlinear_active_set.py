@@ -6,7 +6,7 @@ import os
 from scipy.sparse import csc_matrix
 
 from openmdao.core.analysis_error import AnalysisError
-from openmdao.solvers.linesearch.backtracking import ActiveSetLS, ArmijoGoldsteinLS
+from openmdao.solvers.linesearch.active_set_linesearch import ActiveSetLS
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI

@@ -48,6 +48,8 @@ from openmdao.solvers.nonlinear.nonlinear_block_jac import NonlinearBlockJac
 from openmdao.solvers.nonlinear.newton import NewtonSolver
 from openmdao.solvers.nonlinear.nonlinear_active_set import NonlinearAS
 from openmdao.solvers.nonlinear.nonlinear_runonce import NonlinearRunOnce
+from openmdao.solvers.nonlinear.nonlinear_interior_point import NonlinearIP
+from openmdao.solvers.linear.linear_interior_point import LinearIP
 
 # Surrogate Models
 from openmdao.surrogate_models.kriging import KrigingSurrogate

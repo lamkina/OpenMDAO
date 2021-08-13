@@ -165,12 +165,12 @@ def format_nan_error(system, matrix):
     return msg.format(system.msginfo, ", ".join(varnames))
 
 
-class DirectSolver(LinearSolver):
+class LinearIP(LinearSolver):
     """
     LinearSolver that uses linalg.solve or LU factor/solve.
     """
 
-    SOLVER = "LN: Direct"
+    SOLVER = "LN: IntPnt"
 
     def _declare_options(self):
         """
@@ -258,11 +258,12 @@ class DirectSolver(LinearSolver):
 
         return mtx
 
-    def _linearize(self, X, W, V, L, U):
+    def _linearize(self, W, V, L, U):
         """
         Perform factorization.
         """
         system = self._system()
+        X = np.diag(system._outputs.asarray())
         nproc = system.comm.size
 
         if self._assembled_jac is not None:
@@ -280,8 +281,9 @@ class DirectSolver(LinearSolver):
                     zero_mtx = np.zeros(jac_mtx.shape)
 
                     A_mtx = np.block([[jac_mtx, -eye_mtx, eye_mtx], [W, X - L, zero_mtx], [-V, zero_mtx, U - X]])
+                    A_mtx_sparse = csc_matrix(A_mtx)
 
-                    self._lu = scipy.sparse.linalg.splu(A_mtx)
+                    self._lu = scipy.sparse.linalg.splu(A_mtx_sparse)
                 except RuntimeError as err:
                     if "exactly singular" in str(err):
                         raise RuntimeError(format_singular_error(system, matrix))
@@ -344,7 +346,7 @@ class DirectSolver(LinearSolver):
                 except ValueError:
                     raise RuntimeError(format_nan_error(system, mtx))
 
-    def solve(self, mode, W, V, L, U, v, w, mu rel_systems=None):
+    def solve(self, mode, W, V, L, U, v, w, v_output, w_output, mu, rel_systems=None):
         """
         Run the solver.
 
@@ -366,7 +368,7 @@ class DirectSolver(LinearSolver):
         if mode == "fwd":
             x_vec = d_outputs.asarray()
             b_vec = d_residuals.asarray()
-            X = np.diag(b_vec)
+            X = np.diag(x_vec)
             trans_lu = 0
             trans_splu = "N"
         else:  # rev
@@ -377,10 +379,12 @@ class DirectSolver(LinearSolver):
 
         # AssembledJacobians are unscaled.
         if self._assembled_jac is not None:
+            n = len(x_vec)
             vec_1 = w - v - b_vec
-            vec_2 = mu * np.ones(len(b_vec)) - (X-L).dot(W).dot(np.ones(len(b_vec)))
-            vec_3 = mu * np.ones(len(b_vec)) - (U-X).dot(V).dot(np.ones(len(b_vec)))
-            full_b = tmp = np.block([[vec_1], [vec_2], vec_3]).reshape((-1, 1))
+            vec_2 = mu * np.ones(n) - (X - L).dot(W).dot(np.ones(n))
+            vec_3 = mu * np.ones(n) - (U - X).dot(V).dot(np.ones(n))
+
+            full_b = np.block([vec_1, vec_2, vec_3]).reshape((-1, 1))
 
             with system._unscaled_context(outputs=[d_outputs], residuals=[d_residuals]):
                 if isinstance(self._assembled_jac._int_mtx, DenseMatrix):
@@ -388,8 +392,9 @@ class DirectSolver(LinearSolver):
                 else:
                     arr = self._lu.solve(full_b, trans_splu)
 
-                x_vec[:] = arr
+                x_vec[:] = arr[:n].flatten()
+                w_output[:] = arr[n : 2 * n].flatten()
+                v_output[:] = arr[2 * n :].flatten()
 
-        # matrix-vector-product generated jacobians are scaled.
         else:
-            x_vec[:] = scipy.linalg.lu_solve(self._lup, b_vec, trans=trans_lu)
+            raise RuntimeError("Only supports assembled Jacobians")

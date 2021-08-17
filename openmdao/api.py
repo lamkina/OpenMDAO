@@ -50,6 +50,7 @@ from openmdao.solvers.nonlinear.nonlinear_active_set import NonlinearAS
 from openmdao.solvers.nonlinear.nonlinear_runonce import NonlinearRunOnce
 from openmdao.solvers.nonlinear.nonlinear_interior_point import NonlinearIP
 from openmdao.solvers.linear.linear_interior_point import LinearIP
+from openmdao.solvers.nonlinear.nonlinear_interior_penalty import NonlinearIntPen
 
 # Surrogate Models
 from openmdao.surrogate_models.kriging import KrigingSurrogate

@@ -175,8 +175,7 @@ class LinearInteriorPenalty(LinearSolver):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._mu = 1.0
-        self._lower_bounds = None
-        self._upper_bounds = None
+        self._dp_du_mtx = None
 
     def _declare_options(self):
         """
@@ -264,12 +263,8 @@ class LinearInteriorPenalty(LinearSolver):
 
         return mtx
 
-    def _update_penalty(self, val):
-        self._mu = val
-
-    def _set_bounds(self, lower_bounds, upper_bounds):
-        self._lower_bounds = lower_bounds
-        self._upper_bounds = upper_bounds
+    def _update_penalty_mtx(self, du_dp_arr):
+        self._dp_du_mtx = np.diag(du_dp_arr)
 
     def _linearize(self):
         """
@@ -277,19 +272,6 @@ class LinearInteriorPenalty(LinearSolver):
         """
         system = self._system()
         nproc = system.comm.size
-
-        # Get the states and find the length of the state vector
-        u = system._outputs
-        n = len(u)
-
-        # Compute the partial derivative of the penalty term with
-        # respect to the states and turn the vector into a diagonal matrix
-        lower_mask = np.isfinite(self._lower_bounds)
-        upper_mask = np.isfinite(self._upper_bounds)
-        t_0 = u[lower_mask] - self._lower_bounds[lower_mask]
-        t_1 = self._upper_bounds - u[upper_mask]
-        dp_du_arr = self._mu * ((np.ones(n) / t_0) - (np.ones(n) / t_1))
-        dp_du_mtx = np.diag(dp_du_arr)
 
         if self._assembled_jac is not None:
             matrix = self._assembled_jac._int_mtx._matrix
@@ -301,8 +283,8 @@ class LinearInteriorPenalty(LinearSolver):
             # Perform dense or sparse lu factorization.
             elif isinstance(matrix, csc_matrix):
                 try:
-
-                    penalty_mtx = np.diag(self._mu * ())
+                    matrix = matrix.toarray() + self._dp_du_mtx
+                    matrix = csc_matrix(matrix)
                     self._lu = scipy.sparse.linalg.splu(matrix)
                 except RuntimeError as err:
                     if "exactly singular" in str(err):
@@ -316,6 +298,7 @@ class LinearInteriorPenalty(LinearSolver):
                     if self.options["err_on_singular"]:
                         warnings.simplefilter("error", RuntimeWarning)
                     try:
+                        matrix = matrix + self._dp_du_mtx
                         self._lup = scipy.linalg.lu_factor(matrix)
                     except RuntimeWarning as err:
                         raise RuntimeError(format_singular_error(system, matrix))
@@ -347,6 +330,7 @@ class LinearInteriorPenalty(LinearSolver):
                     warnings.simplefilter("error", RuntimeWarning)
 
                 try:
+                    mtx = mtx + self._dp_du_mtx
                     self._lup = scipy.linalg.lu_factor(mtx)
 
                 except RuntimeWarning as err:

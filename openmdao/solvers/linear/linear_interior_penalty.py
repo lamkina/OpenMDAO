@@ -165,12 +165,18 @@ def format_nan_error(system, matrix):
     return msg.format(system.msginfo, ", ".join(varnames))
 
 
-class DirectSolver(LinearSolver):
+class LinearInteriorPenalty(LinearSolver):
     """
     LinearSolver that uses linalg.solve or LU factor/solve.
     """
 
-    SOLVER = "LN: Direct"
+    SOLVER = "LN: IntPen"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._mu = 1.0
+        self._lower_bounds = None
+        self._upper_bounds = None
 
     def _declare_options(self):
         """
@@ -258,12 +264,32 @@ class DirectSolver(LinearSolver):
 
         return mtx
 
+    def _update_penalty(self, val):
+        self._mu = val
+
+    def _set_bounds(self, lower_bounds, upper_bounds):
+        self._lower_bounds = lower_bounds
+        self._upper_bounds = upper_bounds
+
     def _linearize(self):
         """
         Perform factorization.
         """
         system = self._system()
         nproc = system.comm.size
+
+        # Get the states and find the length of the state vector
+        u = system._outputs
+        n = len(u)
+
+        # Compute the partial derivative of the penalty term with
+        # respect to the states and turn the vector into a diagonal matrix
+        lower_mask = np.isfinite(self._lower_bounds)
+        upper_mask = np.isfinite(self._upper_bounds)
+        t_0 = u[lower_mask] - self._lower_bounds[lower_mask]
+        t_1 = self._upper_bounds - u[upper_mask]
+        dp_du_arr = self._mu * ((np.ones(n) / t_0) - (np.ones(n) / t_1))
+        dp_du_mtx = np.diag(dp_du_arr)
 
         if self._assembled_jac is not None:
             matrix = self._assembled_jac._int_mtx._matrix
@@ -275,6 +301,8 @@ class DirectSolver(LinearSolver):
             # Perform dense or sparse lu factorization.
             elif isinstance(matrix, csc_matrix):
                 try:
+
+                    penalty_mtx = np.diag(self._mu * ())
                     self._lu = scipy.sparse.linalg.splu(matrix)
                 except RuntimeError as err:
                     if "exactly singular" in str(err):
@@ -327,90 +355,6 @@ class DirectSolver(LinearSolver):
                 # NaN in matrix.
                 except ValueError as err:
                     raise RuntimeError(format_nan_error(system, mtx))
-
-    def _inverse(self):
-        """
-        Return the inverse Jacobian.
-
-        This is only used by the Broyden solver when calculating a full model Jacobian. Since it
-        is only done for a single RHS, no need for LU.
-
-        Returns
-        -------
-        ndarray
-            Inverse Jacobian.
-        """
-        system = self._system()
-        iproc = system.comm.rank
-        nproc = system.comm.size
-
-        if self._assembled_jac is not None:
-
-            matrix = self._assembled_jac._int_mtx._matrix
-
-            if matrix is None:
-                # This happens if we're not rank 0 and owned_sizes are being used
-                sz = np.sum(system._owned_sizes)
-                inv_jac = np.zeros((sz, sz))
-
-            # Dense and Sparse matrices have their own inverse method.
-            elif isinstance(matrix, np.ndarray):
-                # Detect singularities and warn user.
-                with warnings.catch_warnings():
-                    if self.options["err_on_singular"]:
-                        warnings.simplefilter("error", RuntimeWarning)
-                    try:
-                        inv_jac = scipy.linalg.inv(matrix)
-                    except RuntimeWarning as err:
-                        raise RuntimeError(format_singular_error(system, matrix))
-
-                    # NaN in matrix.
-                    except ValueError as err:
-                        raise RuntimeError(format_nan_error(system, matrix))
-
-            elif isinstance(matrix, csc_matrix):
-                try:
-                    inv_jac = scipy.sparse.linalg.inv(matrix)
-                except RuntimeError as err:
-                    if "exactly singular" in str(err):
-                        raise RuntimeError(format_singular_error(system, matrix))
-                    else:
-                        raise err
-
-                # to prevent broadcasting errors later, make sure inv_jac is 2D
-                # scipy.sparse.linalg.inv returns a shape (1,) array if matrix is shape (1,1)
-                if inv_jac.size == 1:
-                    inv_jac = inv_jac.reshape((1, 1))
-            else:
-                raise RuntimeError(
-                    "Direct solver not implemented for matrix type %s" " in %s." % (type(matrix), system.msginfo)
-                )
-
-        else:
-            if nproc > 1:
-                raise RuntimeError(
-                    "BroydenSolvers without an assembled jacobian are not supported "
-                    "when running under MPI if comm.size > 1."
-                )
-            mtx = self._build_mtx()
-
-            # During inversion detect singularities and warn user.
-            with warnings.catch_warnings():
-
-                if self.options["err_on_singular"]:
-                    warnings.simplefilter("error", RuntimeWarning)
-
-                try:
-                    inv_jac = scipy.linalg.inv(mtx)
-
-                except RuntimeWarning as err:
-                    raise RuntimeError(format_singular_error(system, mtx))
-
-                # NaN in matrix.
-                except ValueError as err:
-                    raise RuntimeError(format_nan_error(system, mtx))
-
-        return inv_jac
 
     def solve(self, mode, rel_systems=None):
         """

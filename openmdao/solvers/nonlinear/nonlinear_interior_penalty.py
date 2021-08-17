@@ -4,6 +4,7 @@
 import numpy as np
 
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
+from openmdao.solvers.linear.linear_interior_penalty import LinearInteriorPenalty
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
@@ -38,11 +39,10 @@ class NewtonSolver(NonlinearSolver):
         super().__init__(**kwargs)
 
         # Slot for linear solver
-        self.linear_solver = None
-
-        self._mu = 1.0
+        self.linear_solver = LinearInteriorPenalty()
 
         # Slot for linesearch
+        # TODO: Switch out this slot with a custom backtracking linesearch
         self.linesearch = BoundsEnforceLS()
 
     def _declare_options(self):
@@ -68,6 +68,8 @@ class NewtonSolver(NonlinearSolver):
             "AnalysisError that arises during subsolve; when false, it will "
             "continue solving.",
         )
+        self.options.declare("sigma", lower=0.0, upper=1.0, default=0.5, desc="Penalty paramater decrease factor")
+        self.options.declare("mu", lower=0.0, default=100.0, desc="Initial penalty parameter")
 
         self.supports["gradients"] = True
         self.supports["implicit_components"] = True
@@ -137,8 +139,10 @@ class NewtonSolver(NonlinearSolver):
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
 
                 start = end
+
+            self.linear_solver._set_bounds(self._lower_bounds, self._upper_bounds)
         else:
-            self._lower_bounds = self._upper_bounds = None
+            raise RuntimeError("No variable bounds found.  Please use the Newton solver for unbounded models.")
 
     def _assembled_jac_solver_iter(self):
         """
@@ -223,6 +227,8 @@ class NewtonSolver(NonlinearSolver):
         """
         system = self._system()
 
+        self._mu = self.options["mu"]
+
         if self.options["debug_print"]:
             self._err_cache["inputs"] = system._inputs._copy_views()
             self._err_cache["outputs"] = system._outputs._copy_views()
@@ -252,6 +258,11 @@ class NewtonSolver(NonlinearSolver):
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
 
+    def _update_penalty(self):
+        sigma = self.options["sigma"]
+        self._mu *= sigma
+        self.linear_solver._update_penalty(self._mu)
+
     def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
@@ -261,11 +272,7 @@ class NewtonSolver(NonlinearSolver):
         do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
         do_sub_ln = self.linear_solver._linearize_children()
 
-        # Get the states
-        u = system._outputs.asarray()
-
-        # Update the penalty parameter
-        self._mu = 0.5 * ((u - self._lower_bounds).dot(self._w) + (self._upper_bounds - u).dot(self._v)) / (2 * self._n)
+        self._update_penalty()
 
         # Disable local fd
         approx_status = system._owns_approx_jac

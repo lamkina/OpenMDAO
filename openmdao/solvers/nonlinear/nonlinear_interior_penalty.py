@@ -3,14 +3,14 @@
 
 import numpy as np
 
-from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
+from openmdao.solvers.linesearch.interior_penalty_linesearch import InteriorPenaltyLS
 from openmdao.solvers.linear.linear_interior_penalty import LinearInteriorPenalty
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
 
 
-class NewtonSolver(NonlinearSolver):
+class NonlinearIntPen(NonlinearSolver):
     """
     Newton solver.
 
@@ -42,8 +42,10 @@ class NewtonSolver(NonlinearSolver):
         self.linear_solver = LinearInteriorPenalty()
 
         # Slot for linesearch
-        # TODO: Switch out this slot with a custom backtracking linesearch
-        self.linesearch = BoundsEnforceLS()
+        self.linesearch = InteriorPenaltyLS()
+
+        self._lower_bounds = None
+        self._upper_bounds = None
 
     def _declare_options(self):
         """
@@ -139,8 +141,6 @@ class NewtonSolver(NonlinearSolver):
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
 
                 start = end
-
-            self.linear_solver._set_bounds(self._lower_bounds, self._upper_bounds)
         else:
             raise RuntimeError("No variable bounds found.  Please use the Newton solver for unbounded models.")
 
@@ -259,20 +259,51 @@ class NewtonSolver(NonlinearSolver):
         return norm0, norm
 
     def _update_penalty(self):
-        sigma = self.options["sigma"]
-        self._mu *= sigma
-        self.linear_solver._update_penalty(self._mu)
+        system = self._system()
+
+        if self._iter_count > 0:
+            sigma = self.options["sigma"]
+            self._mu *= sigma
+
+        # Get the states and find the length of the state vector
+        u = system._outputs.asarray()
+        n = len(u)
+
+        # Compute the partial derivative of the penalty term with
+        # respect to the states and turn the vector into a diagonal matrix
+        dp_du_arr = np.zeros(n)
+
+        # We only want to add penalty terms for bounds with finite values.
+        lower_mask = np.isfinite(self._lower_bounds)
+        upper_mask = np.isfinite(self._upper_bounds)
+
+        t_0 = u[lower_mask] - self._lower_bounds[lower_mask]
+        t_1 = self._upper_bounds[upper_mask] - u[upper_mask]
+
+        # If no lower or upper bounds are set, there is a chance t_0
+        # or t_1 could be empty so we need to check before calculating
+        # the penalty terms.
+        if t_0.size > 0:
+            dp_du_arr[lower_mask] += self._mu * (np.ones(len(t_0)) / (t_0 + 1e-10))
+
+        if t_1.size > 0:
+            dp_du_arr[upper_mask] += -self._mu * (np.ones(len(t_1)) / (t_1 + 1e-10))
+
+        # Update the penalty matrix in the linear solver
+        self.linear_solver._update_penalty_mtx(dp_du_arr)
+
+        # Set the penalty terms in the linesearch
+        self.linesearch._update_penalty(self._mu)
 
     def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
         """
+        self._update_penalty()
         system = self._system()
         self._solver_info.append_subsolver()
         do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
         do_sub_ln = self.linear_solver._linearize_children()
-
-        self._update_penalty()
 
         # Disable local fd
         approx_status = system._owns_approx_jac
@@ -289,6 +320,9 @@ class NewtonSolver(NonlinearSolver):
         self._linearize()
 
         self.linear_solver.solve("fwd")
+
+        # Need to flip the sign of the residuals back before the linesearch
+        system._vectors["residual"]["linear"] *= -1
 
         if self.linesearch:
             self.linesearch._do_subsolve = do_subsolve

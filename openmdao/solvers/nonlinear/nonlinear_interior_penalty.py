@@ -25,7 +25,7 @@ class NonlinearIntPen(NonlinearSolver):
         Line search algorithm. Default is None for no line search.
     """
 
-    SOLVER = "NL: Newton"
+    SOLVER = "NL: IntPen"
 
     def __init__(self, **kwargs):
         """
@@ -72,6 +72,8 @@ class NonlinearIntPen(NonlinearSolver):
         )
         self.options.declare("sigma", lower=0.0, upper=1.0, default=0.5, desc="Penalty paramater decrease factor")
         self.options.declare("mu", lower=0.0, default=100.0, desc="Initial penalty parameter")
+        self.options.declare("delta", lower=0.0, default=1.0, desc="Active set tolerance")
+        self.options.declare("gamma", lower=0.0, default=0.5, desc="Active set tolerance damping factor")
 
         self.supports["gradients"] = True
         self.supports["implicit_components"] = True
@@ -228,6 +230,8 @@ class NonlinearIntPen(NonlinearSolver):
         system = self._system()
 
         self._mu = self.options["mu"]
+        self._delta = self.options["delta"]
+        self._gamma = self.options["gamma"]
 
         if self.options["debug_print"]:
             self._err_cache["inputs"] = system._inputs._copy_views()
@@ -263,7 +267,11 @@ class NonlinearIntPen(NonlinearSolver):
 
         if self._iter_count > 0:
             sigma = self.options["sigma"]
+
             self._mu *= sigma
+
+            if self._delta > 1e-6:
+                self._delta *= self._gamma
 
         # Get the states and find the length of the state vector
         u = system._outputs.asarray()
@@ -274,8 +282,14 @@ class NonlinearIntPen(NonlinearSolver):
         dp_du_arr = np.zeros(n)
 
         # We only want to add penalty terms for bounds with finite values.
-        lower_mask = np.isfinite(self._lower_bounds)
-        upper_mask = np.isfinite(self._upper_bounds)
+        lower_finite_mask = np.isfinite(self._lower_bounds)
+        upper_finite_mask = np.isfinite(self._upper_bounds)
+
+        lower_active_mask = u - self._lower_bounds <= self._delta
+        upper_active_mask = self._upper_bounds - u <= self._delta
+
+        lower_mask = np.logical_and(lower_finite_mask, lower_active_mask)
+        upper_mask = np.logical_and(upper_finite_mask, upper_active_mask)
 
         t_0 = u[lower_mask] - self._lower_bounds[lower_mask]
         t_1 = self._upper_bounds[upper_mask] - u[upper_mask]
@@ -294,6 +308,7 @@ class NonlinearIntPen(NonlinearSolver):
 
         # Set the penalty terms in the linesearch
         self.linesearch._update_penalty(self._mu)
+        self.linesearch._update_masks(lower_mask, upper_mask)
 
     def _single_iteration(self):
         """

@@ -69,6 +69,9 @@ class InteriorPenaltyLS(NonlinearSolver):
         self._lower_bounds = None
         self._upper_bounds = None
 
+        self._upper_mask = None
+        self._lower_mask = None
+
         self._mu = 1.0
 
         self._penalty_arr = None
@@ -157,21 +160,22 @@ class InteriorPenaltyLS(NonlinearSolver):
     def _update_penalty(self, val):
         self._mu = val
 
+    def _update_masks(self, lower_mask, upper_mask):
+        self._lower_mask = lower_mask
+        self._upper_mask = upper_mask
+
     def _compute_penalty_term(self):
         system = self._system()
         u_arr = system._outputs.asarray()
 
         self._penalty_arr = np.zeros(len(u_arr))
 
-        lower_mask = np.isfinite(self._lower_bounds)
-        upper_mask = np.isfinite(self._upper_bounds)
-
-        self._penalty_arr[lower_mask] += self._mu * np.sum(
-            -np.log((u_arr[lower_mask] - self._lower_bounds[lower_mask]) + 1e-10)
+        self._penalty_arr[self._lower_mask] += self._mu * np.sum(
+            -np.log((u_arr[self._lower_mask] - self._lower_bounds[self._lower_mask]) + 1e-10)
         )
 
-        self._penalty_arr[lower_mask] += self._mu * np.sum(
-            -np.log((self._upper_bounds[upper_mask] - u_arr[upper_mask]) + 1e-10)
+        self._penalty_arr[self._lower_mask] += self._mu * np.sum(
+            -np.log((self._upper_bounds[self._upper_mask] - u_arr[self._upper_mask]) + 1e-10)
         )
 
     def _line_search_objective(self):

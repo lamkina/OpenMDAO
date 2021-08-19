@@ -300,7 +300,6 @@ class NonlinearAS(NonlinearSolver):
         """
         Perform the operations in the iteration loop.
         """
-        step_type = "N"
         system = self._system()
         options = self.options
         delta = options["delta"]
@@ -395,17 +394,12 @@ class NonlinearAS(NonlinearSolver):
                         self._gs_iter()
                     self._run_apply()
 
-                    step_type = "PG1"
                     self._projected_gradient(my_asm_jac, do_subsolve)
             else:
-                step_type = "PG2"
                 self._projected_gradient(my_asm_jac, do_subsolve)
 
         except RuntimeError:
-            step_type = "PG3"
             self._projected_gradient(my_asm_jac, do_subsolve)
-
-        print(step_type)
 
         self._solver_info.pop()
 

@@ -426,13 +426,16 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
     # initialization of a line search, and we're trying to ensure that
     # the u does not violate bounds in the first iteration. If it does,
     # we modify the du vector directly.
-
+    np.set_printoptions(linewidth=500, precision=2)
     # This is the required change in step size, relative to the du vector.
     d_alpha = 0
 
     # Find the largest amount a bound is violated
     # where positive means a bound is violated - i.e. the required d_alpha.
     du_arr = du.asarray()
+    print(f"NEWTON STEP BEFORE BE: {du_arr}")
+    print(f"STATES BEFORE BE: {u.asarray()}")
+    print(f"LOWER BOUNDS: {lower_bounds}")
     mask = du_arr != 0
     if mask.any():
         abs_du_mask = np.abs(du_arr[mask])
@@ -451,6 +454,7 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
                 d_alpha = max_d_alpha
 
     if d_alpha > 0:
+        print(f"dAlpha: {d_alpha}")
         # d_alpha will not be negative because it was initialized to be 0
         # and we've only done max operations.
         # d_alpha will not be greater than alpha because the assumption is that
@@ -460,6 +464,10 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
         # We first update u to reflect the required change to du.
         u.add_scal_vec(-d_alpha, du)
 
+        print(f"STATES AFTER BE: {u}")
+
         # At this point, we normalize d_alpha by alpha to figure out the relative
         # amount that the du vector has to be reduced, then apply the reduction.
         du *= 1 - d_alpha / alpha
+
+        print(f"NEWTON STEP AFTER BE: {du}")

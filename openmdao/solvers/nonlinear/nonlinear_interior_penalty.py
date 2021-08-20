@@ -336,9 +336,6 @@ class NonlinearIntPen(NonlinearSolver):
 
         self.linear_solver.solve("fwd")
 
-        # Need to flip the sign of the residuals back before the linesearch
-        system._vectors["residual"]["linear"] *= -1
-
         if self.linesearch:
             self.linesearch._do_subsolve = do_subsolve
             self.linesearch.solve()

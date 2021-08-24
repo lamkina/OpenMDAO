@@ -2,7 +2,7 @@
 
 
 import numpy as np
-import sys
+import os
 
 from openmdao.solvers.linesearch.interior_point_linesearch import InteriorPointLS
 from openmdao.solvers.linear.linear_interior_point import LinearIP
@@ -278,8 +278,8 @@ class NonlinearIP(NonlinearSolver):
         u = system._outputs.asarray()
         self._n = n = u.size  # Size of the state vector
 
-        self._v = np.full(n, 1.0)
-        self._w = np.full(n, 1.0)
+        self._v = np.full(n, 1e-8)
+        self._w = np.full(n, 1e-8)
 
         self._v_output_linear = np.ones(n)
         self._w_output_linear = np.ones(n)
@@ -368,8 +368,8 @@ class NonlinearIP(NonlinearSolver):
 
     def _solve(self):
         """
-            Run the iterative solver.
-            """
+        Run the iterative solver.
+        """
         maxiter = self.options["maxiter"]
         atol = self.options["atol"]
         rtol = self.options["rtol"]

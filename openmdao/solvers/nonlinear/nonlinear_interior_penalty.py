@@ -268,10 +268,18 @@ class NonlinearIntPen(NonlinearSolver):
         if self._iter_count > 0:
             sigma = self.options["sigma"]
 
-            self._mu *= sigma
+            print(f"d_alpha: {self.linesearch._d_alpha}")
+            if 1.0 - self.linesearch._d_alpha < 1e-2:
+                self._mu += 1 / (1 - self.linesearch._d_alpha)
 
-            if self._delta > 1e-6:
+                if self._mu > 1e6:
+                    self._mu = 1e6
+
+            else:
                 self._delta *= self._gamma
+                self._mu *= sigma
+
+            print(f"mu: {self._mu}")
 
         # Get the states and find the length of the state vector
         u = system._outputs.asarray()
@@ -341,6 +349,14 @@ class NonlinearIntPen(NonlinearSolver):
             self.linesearch.solve()
         else:
             system._outputs += system._vectors["output"]["linear"]
+
+        # cache the previous successful iteration
+        # check d_alpha for a stall
+        # If stalled
+        # reject the step
+        #   restore cached iteration
+        #   increase mu by a constant factor
+        # Try a new step
 
         self._solver_info.pop()
 

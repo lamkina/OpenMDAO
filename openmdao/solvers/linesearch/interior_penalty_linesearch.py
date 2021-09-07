@@ -66,6 +66,9 @@ class InteriorPenaltyLS(NonlinearSolver):
 
         # Parent solver sets this to control whether to solve subsystems.
         self._do_subsolve = False
+
+        self._d_alpha = 0.0
+
         self._lower_bounds = None
         self._upper_bounds = None
 
@@ -155,7 +158,7 @@ class InteriorPenaltyLS(NonlinearSolver):
         if options["print_bound_enforce"]:
             _print_violations(system._outputs, lower, upper)
 
-        _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
+        self._d_alpha = _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
 
     def _update_penalty(self, val):
         self._mu = val
@@ -461,3 +464,8 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
         # At this point, we normalize d_alpha by alpha to figure out the relative
         # amount that the du vector has to be reduced, then apply the reduction.
         du *= 1 - d_alpha / alpha
+
+        return d_alpha
+
+    else:
+        return 0.0

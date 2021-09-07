@@ -39,6 +39,7 @@ class NonlinearIntPen(NonlinearSolver):
         super().__init__(**kwargs)
 
         # Slot for linear solver
+        # TODO: Generalize linear solver
         self.linear_solver = LinearInteriorPenalty()
 
         # Slot for linesearch
@@ -46,6 +47,10 @@ class NonlinearIntPen(NonlinearSolver):
 
         self._lower_bounds = None
         self._upper_bounds = None
+
+        # Hack for recording data
+        # TODO: Implement this with the OpenMDAO recording functionality
+        self._cached_outputs = None
 
     def _declare_options(self):
         """
@@ -268,18 +273,8 @@ class NonlinearIntPen(NonlinearSolver):
         if self._iter_count > 0:
             sigma = self.options["sigma"]
 
-            print(f"d_alpha: {self.linesearch._d_alpha}")
-            if 1.0 - self.linesearch._d_alpha < 1e-2:
-                self._mu += 1 / (1 - self.linesearch._d_alpha)
-
-                if self._mu > 1e6:
-                    self._mu = 1e6
-
-            else:
-                self._delta *= self._gamma
-                self._mu *= sigma
-
-            print(f"mu: {self._mu}")
+            self._delta *= self._gamma
+            self._mu *= sigma
 
         # Get the states and find the length of the state vector
         u = system._outputs.asarray()
@@ -306,10 +301,10 @@ class NonlinearIntPen(NonlinearSolver):
         # or t_1 could be empty so we need to check before calculating
         # the penalty terms.
         if t_0.size > 0:
-            dp_du_arr[lower_mask] += self._mu * (np.ones(len(t_0)) / (t_0 + 1e-10))
+            dp_du_arr[lower_mask] -= self._mu * (np.ones(len(t_0)) / (t_0 + 1e-10))
 
         if t_1.size > 0:
-            dp_du_arr[upper_mask] += -self._mu * (np.ones(len(t_1)) / (t_1 + 1e-10))
+            dp_du_arr[upper_mask] += self._mu * (np.ones(len(t_1)) / (t_1 + 1e-10))
 
         # Update the penalty matrix in the linear solver
         self.linear_solver._update_penalty_mtx(dp_du_arr)
@@ -333,6 +328,7 @@ class NonlinearIntPen(NonlinearSolver):
         system._owns_approx_jac = False
 
         system._vectors["residual"]["linear"].set_vec(system._residuals)
+        print(system._vectors["residual"]["linear"])
         system._vectors["residual"]["linear"] *= -1.0
         my_asm_jac = self.linear_solver._assembled_jac
 
@@ -344,19 +340,10 @@ class NonlinearIntPen(NonlinearSolver):
 
         self.linear_solver.solve("fwd")
 
-        if self.linesearch:
-            self.linesearch._do_subsolve = do_subsolve
-            self.linesearch.solve()
-        else:
-            system._outputs += system._vectors["output"]["linear"]
+        self.linesearch._do_subsolve = do_subsolve
+        self.linesearch.solve()
 
-        # cache the previous successful iteration
-        # check d_alpha for a stall
-        # If stalled
-        # reject the step
-        #   restore cached iteration
-        #   increase mu by a constant factor
-        # Try a new step
+        self._cached_outputs = system._outputs
 
         self._solver_info.pop()
 

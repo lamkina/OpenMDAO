@@ -263,8 +263,8 @@ class LinearInteriorPenalty(LinearSolver):
 
         return mtx
 
-    def _update_penalty_mtx(self, du_dp_arr):
-        self._dp_du_mtx = np.diag(du_dp_arr)
+    def _update_penalty_mtx(self, dp_du_arr):
+        self._dp_du_mtx = np.diag(dp_du_arr)
 
     def _linearize(self):
         """
@@ -284,6 +284,8 @@ class LinearInteriorPenalty(LinearSolver):
             elif isinstance(matrix, csc_matrix):
                 try:
                     matrix = matrix.toarray() + self._dp_du_mtx
+                    matrix[0, :] *= 1e-6
+                    print(matrix)
                     matrix = csc_matrix(matrix)
                     self._lu = scipy.sparse.linalg.splu(matrix)
                 except RuntimeError as err:

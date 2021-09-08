@@ -328,7 +328,6 @@ class NonlinearIntPen(NonlinearSolver):
         system._owns_approx_jac = False
 
         system._vectors["residual"]["linear"].set_vec(system._residuals)
-        print(system._vectors["residual"]["linear"])
         system._vectors["residual"]["linear"] *= -1.0
         my_asm_jac = self.linear_solver._assembled_jac
 

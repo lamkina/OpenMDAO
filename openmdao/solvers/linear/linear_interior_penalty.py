@@ -284,8 +284,7 @@ class LinearInteriorPenalty(LinearSolver):
             elif isinstance(matrix, csc_matrix):
                 try:
                     matrix = matrix.toarray() + self._dp_du_mtx
-                    matrix[0, :] *= 1e-6
-                    print(matrix)
+                    print("JACOBIAN: ", matrix)
                     matrix = csc_matrix(matrix)
                     self._lu = scipy.sparse.linalg.splu(matrix)
                 except RuntimeError as err:
@@ -360,6 +359,8 @@ class LinearInteriorPenalty(LinearSolver):
         d_residuals = system._vectors["residual"]["linear"]
         d_outputs = system._vectors["output"]["linear"]
 
+        print("RESIDUALS: ", d_residuals)
+
         # assign x and b vectors based on mode
         if mode == "fwd":
             x_vec = d_outputs.asarray()
@@ -383,6 +384,7 @@ class LinearInteriorPenalty(LinearSolver):
                     arr = self._lu.solve(full_b, trans_splu)
 
                 x_vec[:] = arr
+                print("NEWTON STEP: ", x_vec)
 
         # matrix-vector-product generated jacobians are scaled.
         else:

@@ -67,15 +67,11 @@ class InteriorPenaltyLS(NonlinearSolver):
         # Parent solver sets this to control whether to solve subsystems.
         self._do_subsolve = False
 
-        self._d_alpha = 0.0
-
         self._lower_bounds = None
         self._upper_bounds = None
 
-        self._upper_mask = None
-        self._lower_mask = None
-
-        self._mu = 1.0
+        self._mu_lower = None
+        self._mu_upper = None
 
         self._penalty_arr = None
 
@@ -122,6 +118,8 @@ class InteriorPenaltyLS(NonlinearSolver):
                     if not np.isscalar(var_lower):
                         var_lower = var_lower.ravel()
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
+                else:
+                    self._lower_bounds = np.full(len(system._outputs), np.inf)
 
                 if var_upper is not None:
                     if self._upper_bounds is None:
@@ -129,10 +127,15 @@ class InteriorPenaltyLS(NonlinearSolver):
                     if not np.isscalar(var_upper):
                         var_upper = var_upper.ravel()
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
+                else:
+                    self._upper_bounds = np.full(len(system._outputs), np.inf)
 
                 start = end
+
+            self._lower_finite_mask = np.isfinite(self._lower_bounds)
+            self._upper_finite_mask = np.isfinite(self._upper_bounds)
         else:
-            self._lower_bounds = self._upper_bounds = None
+            raise RuntimeError("No variable bounds found.  Please use the Newton solver for unbounded models.")
 
     def _enforce_bounds(self, step, alpha):
         """
@@ -158,28 +161,26 @@ class InteriorPenaltyLS(NonlinearSolver):
         if options["print_bound_enforce"]:
             _print_violations(system._outputs, lower, upper)
 
-        self._d_alpha = _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
+        _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
 
-    def _update_penalty(self, val):
-        self._mu = val
+    def _update_penalty(self, mu_lower, mu_upper):
+        self._mu_lower = mu_lower
+        self._mu_upper = mu_upper
 
-    def _update_masks(self, lower_mask, upper_mask):
-        self._lower_mask = lower_mask
-        self._upper_mask = upper_mask
-
-    def _compute_penalty_term(self):
+    def _compute_penalty(self):
         system = self._system()
         u_arr = system._outputs.asarray()
 
         self._penalty_arr = np.zeros(len(u_arr))
 
-        self._penalty_arr[self._lower_mask] += self._mu * np.sum(
-            -np.log((u_arr[self._lower_mask] - self._lower_bounds[self._lower_mask]) + 1e-10)
-        )
+        t_lower = u_arr[self._lower_finite_mask] - self._lower_bounds[self._lower_finite_mask]
+        t_upper = self._upper_bounds[self._upper_finite_mask] - u_arr[self._upper_finite_mask]
 
-        self._penalty_arr[self._lower_mask] += self._mu * np.sum(
-            -np.log((self._upper_bounds[self._upper_mask] - u_arr[self._upper_mask]) + 1e-10)
-        )
+        if t_lower.size > 0:
+            self._penalty_arr[self._lower_finite_mask] += np.sum(self._mu_lower * -np.log(t_lower + 1e-10))
+
+        if t_upper.size > 0:
+            self._penalty_arr[self._upper_finite_mask] += np.sum(self._mu_upper * -np.log(t_upper + 1e-10))
 
     def _line_search_objective(self):
         """
@@ -192,7 +193,7 @@ class InteriorPenaltyLS(NonlinearSolver):
         """
         system = self._system()
         resids_arr = system._residuals.asarray()
-        self._compute_penalty_term()
+        self._compute_penalty()
         rp_arr = resids_arr + self._penalty_arr
         phi = np.linalg.norm(rp_arr)
         return phi
@@ -284,7 +285,6 @@ class InteriorPenaltyLS(NonlinearSolver):
         Perform the operations in the iteration loop.
         """
         self._analysis_error_raised = False
-        system = self._system()
 
         # Hybrid newton support.
         if self._do_subsolve and self._iter_count > 0:
@@ -464,8 +464,3 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
         # At this point, we normalize d_alpha by alpha to figure out the relative
         # amount that the du vector has to be reduced, then apply the reduction.
         du *= 1 - d_alpha / alpha
-
-        return d_alpha
-
-    else:
-        return 0.0

@@ -2,9 +2,9 @@
 
 
 import numpy as np
+from scipy.sparse import csc_matrix
 
 from openmdao.solvers.linesearch.interior_penalty_linesearch import InteriorPenaltyLS
-from openmdao.solvers.linear.linear_interior_penalty import LinearInteriorPenalty
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
@@ -39,18 +39,26 @@ class NonlinearIntPen(NonlinearSolver):
         super().__init__(**kwargs)
 
         # Slot for linear solver
-        # TODO: Generalize linear solver
-        self.linear_solver = LinearInteriorPenalty()
+        self.linear_solver = None
 
         # Slot for linesearch
         self.linesearch = InteriorPenaltyLS()
 
+        # Slots for upper and lower bounds
         self._lower_bounds = None
         self._upper_bounds = None
 
-        # Hack for recording data
-        # TODO: Implement this with the OpenMDAO recording functionality
-        self._cached_outputs = None
+        # Slots for d_alpha vectors
+        self._d_alpha_upper = None
+        self._d_alpha_lower = None
+
+        # Penalty parameter
+        self._mu_lower = None
+        self._mu_upper = None
+
+        # Finite masks
+        self._lower_finite_mask = None
+        self._upper_finite_mask = None
 
     def _declare_options(self):
         """
@@ -75,10 +83,9 @@ class NonlinearIntPen(NonlinearSolver):
             "AnalysisError that arises during subsolve; when false, it will "
             "continue solving.",
         )
-        self.options.declare("sigma", lower=0.0, upper=1.0, default=0.5, desc="Penalty paramater decrease factor")
-        self.options.declare("mu", lower=0.0, default=100.0, desc="Initial penalty parameter")
-        self.options.declare("delta", lower=0.0, default=1.0, desc="Active set tolerance")
-        self.options.declare("gamma", lower=0.0, default=0.5, desc="Active set tolerance damping factor")
+        self.options.declare("mu", lower=0.0, default=1.0, desc="Initial penalty parameter")
+        self.options.declare("beta", lower=1.0, default=10.0, desc="Geometric penalty multiplier")
+        self.options.declare("c", lower=0.0, upper=1.0, default=0.5, desc="Constant penalty scaling term")
 
         self.supports["gradients"] = True
         self.supports["implicit_components"] = True
@@ -140,6 +147,9 @@ class NonlinearIntPen(NonlinearSolver):
                         var_lower = var_lower.ravel()
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
 
+                else:
+                    self._lower_bounds = np.full(len(system._outputs), np.inf)
+
                 if var_upper is not None:
                     if self._upper_bounds is None:
                         self._upper_bounds = np.full(len(system._outputs), np.inf)
@@ -147,7 +157,13 @@ class NonlinearIntPen(NonlinearSolver):
                         var_upper = var_upper.ravel()
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
 
+                else:
+                    self._upper_bounds = np.full(len(system._outputs), np.inf)
+
                 start = end
+
+            self._lower_finite_mask = np.isfinite(self._lower_bounds)
+            self._upper_finite_mask = np.isfinite(self._upper_bounds)
         else:
             raise RuntimeError("No variable bounds found.  Please use the Newton solver for unbounded models.")
 
@@ -234,9 +250,10 @@ class NonlinearIntPen(NonlinearSolver):
         """
         system = self._system()
 
-        self._mu = self.options["mu"]
-        self._delta = self.options["delta"]
-        self._gamma = self.options["gamma"]
+        # Set the initial penalty only for states with finite lower and
+        # upper bounds
+        self._mu_lower = np.full(len(self._lower_finite_mask), self.options["mu"])
+        self._mu_upper = np.full(len(self._upper_finite_mask), self.options["mu"])
 
         if self.options["debug_print"]:
             self._err_cache["inputs"] = system._inputs._copy_views()
@@ -267,80 +284,161 @@ class NonlinearIntPen(NonlinearSolver):
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
 
-    def _update_penalty(self):
+    def _compute_bound_violation(self):
         system = self._system()
 
-        if self._iter_count > 0:
-            sigma = self.options["sigma"]
-
-            self._delta *= self._gamma
-            self._mu *= sigma
+        stall_tol = self.options["stall_tol"]
 
         # Get the states and find the length of the state vector
         u = system._outputs.asarray()
-        n = len(u)
+        du = system._vectors["output"]["linear"].asarray()
 
-        # Compute the partial derivative of the penalty term with
-        # respect to the states and turn the vector into a diagonal matrix
-        dp_du_arr = np.zeros(n)
+        # Initialize d_alpha to zeros
+        # We only want to store and calculate d_alpha for states that
+        # have bounds
+        d_alpha_lower = np.zeros(len(self._lower_finite_mask))
+        d_alpha_upper = np.zeros(len(self._upper_finite_mask))
 
-        # We only want to add penalty terms for bounds with finite values.
-        lower_finite_mask = np.isfinite(self._lower_bounds)
-        upper_finite_mask = np.isfinite(self._upper_bounds)
+        # Compute d_alpha for all states with finite bounds
+        d_alpha_lower = (self._lower_bounds[self._lower_finite_mask] - u[self._lower_finite_mask]) / np.abs(
+            du[self._lower_finite_mask]
+        )
+        d_alpha_upper = (u[self._upper_finite_mask] - self._upper_bounds[self._upper_finite_mask]) / np.abs(
+            du[self._upper_finite_mask]
+        )
 
-        lower_active_mask = u - self._lower_bounds <= self._delta
-        upper_active_mask = self._upper_bounds - u <= self._delta
+        # ==============================================================
+        # d_alpha > 0 means that the state has violated a bound
+        # d_alpha < 0 means that the state has not violated a bound
+        # ==============================================================
 
-        lower_mask = np.logical_and(lower_finite_mask, lower_active_mask)
-        upper_mask = np.logical_and(upper_finite_mask, upper_active_mask)
+        # We want to set all values of d_alpha < 0 to 0 so that
+        # the penalty logic and formula won't do anything for those
+        # terms.
+        self._d_alpha_lower = np.where(d_alpha_lower < 0, 0, d_alpha_lower)
+        self._d_alpha_upper = np.where(d_alpha_upper < 0, 0, d_alpha_upper)
 
-        t_0 = u[lower_mask] - self._lower_bounds[lower_mask]
-        t_1 = self._upper_bounds[upper_mask] - u[upper_mask]
+        # print(self._d_alpha_upper)
 
-        # If no lower or upper bounds are set, there is a chance t_0
-        # or t_1 could be empty so we need to check before calculating
-        # the penalty terms.
-        if t_0.size > 0:
-            dp_du_arr[lower_mask] -= self._mu * (np.ones(len(t_0)) / (t_0 + 1e-10))
+        # Now check if any of the d_alpha values are less than the
+        # stall tolerance and return an exit code to tell the solver
+        # how to proceed
+        if np.any(1 - self._d_alpha_lower < stall_tol) or np.any(1 - self._d_alpha_upper < stall_tol):
+            # We need to place an upper bound on mu to prevent strange
+            # penalty function curvature
+            if np.any(self._mu_lower > 1e6) or np.any(self._mu_upper > 1e6):
+                return False
+            else:
+                return True
+        else:
+            return False
 
-        if t_1.size > 0:
-            dp_du_arr[upper_mask] += self._mu * (np.ones(len(t_1)) / (t_1 + 1e-10))
+    def _update_penalty(self):
+        beta = self.options["beta"]
+        c = self.options["c"]
 
-        # Update the penalty matrix in the linear solver
-        self.linear_solver._update_penalty_mtx(dp_du_arr)
+        # Only calculate penalty terms for states with finite bounds.
+        # Reducing the array to finite values is built into the method
+        # for computing d_alpha
+        if self._d_alpha_lower.size > 0:
+            self._mu_lower *= beta * self._d_alpha_lower + c
 
-        # Set the penalty terms in the linesearch
-        self.linesearch._update_penalty(self._mu)
-        self.linesearch._update_masks(lower_mask, upper_mask)
+        if self._d_alpha_upper.size > 0:
+            self._mu_upper *= beta * self._d_alpha_upper + c
+
+    def _modify_jacobian(self, my_asm_jac):
+
+        system = self._system()
+
+        # Get the states and find the length of the state vector
+        u = system._outputs.asarray()
+        dp_du_arr = np.zeros(len(u))
+
+        # We want to add the penalty terms to the diagonal of the
+        # Jacobian before the linear solve so that we don't need
+        # a specialized linear solver.
+        mtx = my_asm_jac._int_mtx._matrix
+
+        # Only add a penalty term to the diagonal if the state has a
+        # finite bound. If no bounds are set, the diagonal term will
+        # be the same as an unmodified Newton system.
+        t_lower = u[self._lower_finite_mask] - self._lower_bounds[self._lower_finite_mask]
+        t_upper = self._upper_bounds[self._upper_finite_mask] - u[self._upper_finite_mask]
+
+        if t_lower.size > 0:
+            dp_du_arr[self._lower_finite_mask] += -self._mu_lower / (t_lower + 1e-10)
+
+        if t_upper.size > 0:
+            dp_du_arr[self._upper_finite_mask] += self._mu_upper / (t_upper + 1e-10)
+
+        if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
+            mtx = mtx.toarray()
+            mtx += np.diag(dp_du_arr)
+            my_asm_jac._int_mtx._matrix = csc_matrix(mtx)
+
+        else:  # Not a sparse matrix
+            mtx += np.diag(dp_du_arr)
+            my_asm_jac._int_mtx._matrix = mtx
 
     def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
         """
-        self._update_penalty()
+        flag = True
         system = self._system()
         self._solver_info.append_subsolver()
-        do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
-        do_sub_ln = self.linear_solver._linearize_children()
 
-        # Disable local fd
-        approx_status = system._owns_approx_jac
-        system._owns_approx_jac = False
+        while flag:
+            # On the first Newton iteration, we should use the user
+            # set penalty value.  After that, we want to use the
+            # dynamic formula to update the penalty.
+            if self._iter_count > 0:
+                self._update_penalty()
 
-        system._vectors["residual"]["linear"].set_vec(system._residuals)
-        system._vectors["residual"]["linear"] *= -1.0
-        my_asm_jac = self.linear_solver._assembled_jac
+            do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
+            do_sub_ln = self.linear_solver._linearize_children()
 
-        system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
-        if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
-            my_asm_jac._update(system)
+            # Disable local fd
+            approx_status = system._owns_approx_jac
+            system._owns_approx_jac = False
 
-        self._linearize()
+            system._vectors["residual"]["linear"].set_vec(system._residuals)
+            system._vectors["residual"]["linear"] *= -1.0
+            my_asm_jac = self.linear_solver._assembled_jac
 
-        self.linear_solver.solve("fwd")
+            system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
+            if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
+                my_asm_jac._update(system)
 
+            self._modify_jacobian(my_asm_jac)
+
+            self._linearize()
+
+            self.linear_solver.solve("fwd")
+
+            # Move the states to the Newton update
+            system._outputs += system._vectors["output"]["linear"]
+
+            flag = self._compute_bound_violation()
+            if self._iter_count == 0:
+                flag = False
+
+            # Move the states back for either another iteration of the
+            # penalty update or the start of the linesearch
+            system._outputs -= system._vectors["output"]["linear"]
+
+        # Set the penalty terms in the linesearch
+        self.linesearch._update_penalty(self._mu_lower, self._mu_upper)
+
+        # Run the linesearch to find a Newton step
         self.linesearch._do_subsolve = do_subsolve
         self.linesearch.solve()
+
+        # If we find a state update that produces a successful step,
+        # we want to damp the penalty term.  To do that, we need to
+        # set d_alpha = 0 for the start of the next iteration
+        self._d_alpha_lower = np.zeros(len(self._lower_finite_mask))
+        self._d_alpha_upper = np.zeros(len(self._upper_finite_mask))
 
         self._cached_outputs = system._outputs
 

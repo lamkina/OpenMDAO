@@ -84,9 +84,7 @@ class NonlinearIntPen(NonlinearSolver):
             "continue solving.",
         )
         self.options.declare("mu", lower=0.0, default=1.0, desc="Initial penalty parameter")
-        self.options.declare("beta", lower=1.0, default=10.0, desc="Geometric penalty multiplier")
-        self.options.declare("rho", lower=0.0, upper=1.0, default=0.5, desc="Constant penalty scaling term")
-        self.options.declare("ptol", default=1e-2, desc="Penalty update tolerance")
+        self.options.declare("beta", lower=0.0, default=0.5, desc="Geometric penalty multiplier")
 
         self.supports["gradients"] = True
         self.supports["implicit_components"] = True
@@ -251,10 +249,8 @@ class NonlinearIntPen(NonlinearSolver):
         """
         system = self._system()
 
-        # Set the initial penalty only for states with finite lower and
-        # upper bounds
-        self._mu_lower = np.full(np.count_nonzero(self._lower_finite_mask), self.options["mu"])
-        self._mu_upper = np.full(np.count_nonzero(self._upper_finite_mask), self.options["mu"])
+        # Set the initial penalty
+        self._mu = self.options["mu"]
 
         if self.options["debug_print"]:
             self._err_cache["inputs"] = system._inputs._copy_views()
@@ -285,64 +281,9 @@ class NonlinearIntPen(NonlinearSolver):
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
 
-    def _compute_bound_violation(self):
-        system = self._system()
-
-        ptol = self.options["ptol"]
-
-        # Get the states and find the length of the state vector
-        u = system._outputs.asarray()
-        du = system._vectors["output"]["linear"].asarray()
-
-        # Initialize d_alpha to zeros
-        # We only want to store and calculate d_alpha for states that
-        # have bounds
-        d_alpha_lower = np.zeros(np.count_nonzero(self._lower_finite_mask))
-        d_alpha_upper = np.zeros(np.count_nonzero(self._upper_finite_mask))
-
-        # Compute d_alpha for all states with finite bounds
-        t_lower = self._lower_bounds[self._lower_finite_mask] - u[self._lower_finite_mask]
-        t_upper = u[self._upper_finite_mask] - self._upper_bounds[self._upper_finite_mask]
-
-        d_alpha_lower = t_lower / np.abs(du[self._lower_finite_mask])
-        d_alpha_upper = t_upper / np.abs(du[self._upper_finite_mask])
-
-        # ==============================================================
-        # d_alpha > 0 means that the state has violated a bound
-        # d_alpha < 0 means that the state has not violated a bound
-        # ==============================================================
-
-        # We want to set all values of d_alpha < 0 to 0 so that
-        # the penalty logic and formula won't do anything for those
-        # terms.
-        self._d_alpha_lower = np.where(d_alpha_lower < 0, 0, d_alpha_lower)
-        self._d_alpha_upper = np.where(d_alpha_upper < 0, 0, d_alpha_upper)
-
-        # Now check if any of the d_alpha values are less than the
-        # stall tolerance and return an exit code to tell the solver
-        # how to proceed
-        if np.any(1 - self._d_alpha_lower < ptol) or np.any(1 - self._d_alpha_upper < ptol):
-            # We need to place an upper bound on mu to prevent strange
-            # penalty function curvature
-            if np.any(self._mu_lower > 1e6) or np.any(self._mu_upper > 1e6):
-                return False
-            else:
-                return True
-        else:
-            return False
-
     def _update_penalty(self):
         beta = self.options["beta"]
-        rho = self.options["rho"]
-
-        # Only calculate penalty terms for states with finite bounds.
-        # Reducing the array to finite values is built into the method
-        # for computing d_alpha
-        if self._d_alpha_lower.size > 0:
-            self._mu_lower *= beta * self._d_alpha_lower + rho
-
-        if self._d_alpha_upper.size > 0:
-            self._mu_upper *= beta * self._d_alpha_upper + rho
+        self._mu *= beta
 
     def _modify_jacobian(self, my_asm_jac):
 
@@ -364,10 +305,10 @@ class NonlinearIntPen(NonlinearSolver):
         t_upper = self._upper_bounds[self._upper_finite_mask] - u[self._upper_finite_mask]
 
         if t_lower.size > 0:
-            dp_du_arr[self._lower_finite_mask] += -self._mu_lower / (t_lower + 1e-10)
+            dp_du_arr[self._lower_finite_mask] += -self._mu / (t_lower + 1e-10)
 
         if t_upper.size > 0:
-            dp_du_arr[self._upper_finite_mask] += self._mu_upper / (t_upper + 1e-10)
+            dp_du_arr[self._upper_finite_mask] += self._mu / (t_upper + 1e-10)
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
             mtx = mtx.toarray()
@@ -382,61 +323,39 @@ class NonlinearIntPen(NonlinearSolver):
         """
         Perform the operations in the iteration loop.
         """
-        flag = True
         system = self._system()
         self._solver_info.append_subsolver()
 
-        while flag:
-            # On the first Newton iteration, we should use the user
-            # set penalty value.  After that, we want to use the
-            # dynamic formula to update the penalty.
-            if self._iter_count > 0:
-                self._update_penalty()
+        if self._iter_count > 0:
+            self._update_penalty()
 
-            do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
-            do_sub_ln = self.linear_solver._linearize_children()
+        do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
+        do_sub_ln = self.linear_solver._linearize_children()
 
-            # Disable local fd
-            approx_status = system._owns_approx_jac
-            system._owns_approx_jac = False
+        # Disable local fd
+        approx_status = system._owns_approx_jac
+        system._owns_approx_jac = False
 
-            system._vectors["residual"]["linear"].set_vec(system._residuals)
-            system._vectors["residual"]["linear"] *= -1.0
-            my_asm_jac = self.linear_solver._assembled_jac
+        system._vectors["residual"]["linear"].set_vec(system._residuals)
+        system._vectors["residual"]["linear"] *= -1.0
+        my_asm_jac = self.linear_solver._assembled_jac
 
-            system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
-            if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
-                my_asm_jac._update(system)
+        system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
+        if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
+            my_asm_jac._update(system)
 
-            self._modify_jacobian(my_asm_jac)
+        self._modify_jacobian(my_asm_jac)
 
-            self._linearize()
+        self._linearize()
 
-            self.linear_solver.solve("fwd")
-
-            # Move the states to the Newton update
-            system._outputs += system._vectors["output"]["linear"]
-
-            flag = self._compute_bound_violation()
-            if self._iter_count == 0:
-                flag = False
-
-            # Move the states back for either another iteration of the
-            # penalty update or the start of the linesearch
-            system._outputs -= system._vectors["output"]["linear"]
+        self.linear_solver.solve("fwd")
 
         # Set the penalty terms in the linesearch
-        self.linesearch._update_penalty(self._mu_lower, self._mu_upper)
+        self.linesearch._update_penalty(self._mu)
 
         # Run the linesearch to find a Newton step
         self.linesearch._do_subsolve = do_subsolve
         self.linesearch.solve()
-
-        # If we find a state update that produces a successful step,
-        # we want to damp the penalty term.  To do that, we need to
-        # set d_alpha = 0 for the start of the next iteration
-        self._d_alpha_lower = np.zeros(np.count_nonzero(self._lower_finite_mask))
-        self._d_alpha_upper = np.zeros(np.count_nonzero(self._upper_finite_mask))
 
         self._cached_outputs = system._outputs
 

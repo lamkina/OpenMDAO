@@ -70,8 +70,7 @@ class InteriorPenaltyLS(NonlinearSolver):
         self._lower_bounds = None
         self._upper_bounds = None
 
-        self._mu_lower = None
-        self._mu_upper = None
+        self._mu = None
 
         self._penalty_arr = None
 
@@ -161,11 +160,10 @@ class InteriorPenaltyLS(NonlinearSolver):
         if options["print_bound_enforce"]:
             _print_violations(system._outputs, lower, upper)
 
-        _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
+        _enforce_bounds_scalar(system._outputs, step, alpha, lower, upper)
 
-    def _update_penalty(self, mu_lower, mu_upper):
-        self._mu_lower = mu_lower
-        self._mu_upper = mu_upper
+    def _update_penalty(self, mu):
+        self._mu = mu
 
     def _compute_penalty(self):
         system = self._system()
@@ -177,10 +175,10 @@ class InteriorPenaltyLS(NonlinearSolver):
         t_upper = self._upper_bounds[self._upper_finite_mask] - u_arr[self._upper_finite_mask]
 
         if t_lower.size > 0:
-            self._penalty_arr[self._lower_finite_mask] += np.sum(self._mu_lower * -np.log(t_lower + 1e-10))
+            self._penalty_arr[self._lower_finite_mask] += np.sum(self._mu * -np.log(t_lower + 1e-10))
 
         if t_upper.size > 0:
-            self._penalty_arr[self._upper_finite_mask] += np.sum(self._mu_upper * -np.log(t_upper + 1e-10))
+            self._penalty_arr[self._upper_finite_mask] += np.sum(self._mu * -np.log(t_upper + 1e-10))
 
     def _line_search_objective(self):
         """
@@ -405,9 +403,9 @@ class InteriorPenaltyLS(NonlinearSolver):
             self._mpi_print(self._iter_count, phi, self.alpha)
 
 
-def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
+def _enforce_bounds_scalar(u, du, alpha, lower_bounds, upper_bounds):
     """
-    Enforce lower/upper bounds, backtracking the entire vector together.
+    Enforce lower/upper bounds on each scalar separately, then backtrack as a vector.
 
     This method modifies both self (u) and step (du) in-place.
 
@@ -424,43 +422,26 @@ def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
     upper_bounds : ndarray
         Upper bounds array.
     """
-    # The assumption is that alpha * du has been added to self (i.e., u)
+    # The assumption is that alpha * step has been added to this vector
     # just prior to this method being called. We are currently in the
     # initialization of a line search, and we're trying to ensure that
-    # the u does not violate bounds in the first iteration. If it does,
-    # we modify the du vector directly.
-    # This is the required change in step size, relative to the du vector.
-    d_alpha = 0
+    # the initial step does not violate bounds. If it does, we modify
+    # the step vector directly.
 
-    # Find the largest amount a bound is violated
-    # where positive means a bound is violated - i.e. the required d_alpha.
-    du_arr = du.asarray()
-    mask = du_arr != 0
-    if mask.any():
-        abs_du_mask = np.abs(du_arr[mask])
-        u_mask = u.asarray()[mask]
+    # enforce bounds on step in-place.
+    u_data = u.asarray()
 
-        # Check lower bound
-        if lower_bounds is not None:
-            max_d_alpha = np.amax((lower_bounds[mask] - u_mask) / abs_du_mask)
-            if max_d_alpha > d_alpha:
-                d_alpha = max_d_alpha
+    # If u > lower, we're just adding zero. Otherwise, we're adding
+    # the step required to get up to the lower bound.
+    # For du, we normalize by alpha since du eventually gets
+    # multiplied by alpha.
+    change_lower = 0.0 if lower_bounds is None else np.maximum(u_data, lower_bounds) - u_data
 
-        # Check upper bound
-        if upper_bounds is not None:
-            max_d_alpha = np.amax((u_mask - upper_bounds[mask]) / abs_du_mask)
-            if max_d_alpha > d_alpha:
-                d_alpha = max_d_alpha
+    # If u < upper, we're just adding zero. Otherwise, we're adding
+    # the step required to get down to the upper bound, but normalized
+    # by alpha since du eventually gets multiplied by alpha.
+    change_upper = 0.0 if upper_bounds is None else np.minimum(u_data, upper_bounds) - u_data
 
-    if d_alpha > 0:
-        # d_alpha will not be negative because it was initialized to be 0
-        # and we've only done max operations.
-        # d_alpha will not be greater than alpha because the assumption is that
-        # the original point was valid - i.e., no bounds were violated.
-        # Therefore 0 <= d_alpha <= alpha.
-
-        # We first update u to reflect the required change to du.
-        u.add_scal_vec(-d_alpha, du)
-        # At this point, we normalize d_alpha by alpha to figure out the relative
-        # amount that the du vector has to be reduced, then apply the reduction.
-        du *= 1 - d_alpha / alpha
+    change = change_lower + change_upper
+    u_data += change
+    du += change / alpha

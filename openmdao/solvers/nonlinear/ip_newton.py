@@ -412,6 +412,11 @@ class IPNewtonSolver(NonlinearSolver):
             mtx += pt_mtx
             jac._int_mtx._matrix = mtx
 
+    def _update_pt_step(self):
+        # TODO: Wrtie docstring
+        # TODO: Add new PT update algorithm
+        self._tau *= self.options["gamma"]
+
     def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
@@ -421,7 +426,8 @@ class IPNewtonSolver(NonlinearSolver):
         do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
         do_sub_ln = self.linear_solver._linearize_children()
 
-        # Update the penalty if not the first iteration
+        # Update the penalty term and pseudo-transient step if not the
+        # first iteration
         if self._iter_count > 0:
             if self.options["interior_penalty"]:
                 self._update_penalty()

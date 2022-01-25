@@ -42,6 +42,44 @@ class AdaptiveLS(LinesearchSolver):
         super().__init__(**kwargs)
 
         self._analysis_error_raised = False
+        self.mu_upper = None
+        self.mu_lower = None
+
+        self._lower_finite_mask = None
+        self._upper_finite_mask = None
+
+    def _declare_options(self):
+        """
+        Declare options before kwargs are processed in the init method.
+        """
+        super()._declare_options()
+        self.options.declare(
+            "penalty_residual",
+            default=False,
+            types=bool,
+            desc="Whether or not to use the penalty terms in the line search residual.",
+        )
+        self.options.declare(
+            "c",
+            default=0.1,
+            lower=0.0,
+            upper=1.0,
+            desc="Slope parameter for line of "
+            "sufficient decrease. The larger the step, the more decrease is required to "
+            "terminate the line search.",
+        )
+        self.options.declare("bt_factor", default=0.5, lower=0.0, upper=1.0, desc="Back tracking contraction factor.")
+        self.options.declare("ft_factor", default=2.0, lower=1.0, desc="Forward tracking multiplicative factor")
+        self.options.declare("alpha", default=1.0, lower=0.0, desc="Initial line search step.")
+        self.options.declare(
+            "retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised."
+        )
+        self.options.declare(
+            "method", default="Armijo", values=["Armijo", "Goldstein"], desc="Method to calculate stopping condition."
+        )
+        self.options.declare(
+            "alpha_max", default=10.0, lower=1.0, desc="Initial max line search step length for formward tracking"
+        )
 
     def _line_search_objective(self):
         """
@@ -52,7 +90,33 @@ class AdaptiveLS(LinesearchSolver):
         float
             Line search objective (residual norm).
         """
-        return self._iter_get_norm()
+
+        # Compute the penalized residual norm
+        if self.options["penalty_residual"]:
+            system = self._system()
+            u = system._outputs.asarray()
+            resids = system._residuals.asarray()
+            lb = self._lower_bounds
+            ub = self._upper_bounds
+            lb_mask = self._lower_finite_mask
+            ub_mask = self._upper_finite_mask
+
+            penalty = np.zeros(u.size)
+
+            t_lower = u[lb_mask] - lb[lb_mask]
+            t_upper = ub[ub_mask] - u[ub_mask]
+
+            if t_lower.size > 0:
+                penalty[lb_mask] += np.sum(self.mu_lower * -np.log(t_lower + 1e-10))
+
+            if t_upper.size > 0:
+                penalty[ub_mask] += np.sum(self.mu_upper * -np.log(t_upper + 1e-10))
+
+            return np.linalg.norm(resids + penalty)
+
+        # Compute the unpenalized residual norm
+        else:
+            return self._iter_get_norm()
 
     def _iter_initialize(self):
         """
@@ -102,29 +166,6 @@ class AdaptiveLS(LinesearchSolver):
             phi = np.nan
 
         return phi
-
-    def _declare_options(self):
-        """
-        Declare options before kwargs are processed in the init method.
-        """
-        super()._declare_options()
-        opt = self.options
-        opt["maxiter"] = 5
-        opt.declare(
-            "c",
-            default=0.1,
-            lower=0.0,
-            upper=1.0,
-            desc="Slope parameter for line of "
-            "sufficient decrease. The larger the step, the more decrease is required to "
-            "terminate the line search.",
-        )
-        opt.declare("rho", default=0.5, lower=0.0, upper=1.0, desc="Contraction factor.")
-        opt.declare("alpha", default=1.0, lower=0.0, desc="Initial line search step.")
-        opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
-        opt.declare(
-            "method", default="Armijo", values=["Armijo", "Goldstein"], desc="Method to calculate stopping condition."
-        )
 
     def _single_iteration(self):
         """

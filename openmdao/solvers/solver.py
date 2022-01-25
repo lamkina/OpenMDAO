@@ -832,7 +832,7 @@ class LinesearchSolver(NonlinearSolver):
         opt = self.options
         opt.declare(
             "bound_enforcement",
-            default="scalar",
+            default="vector",
             values=["vector", "scalar", "wall"],
             desc="If this is set to 'vector', the entire vector is backtracked together "
             + "when a bound is violated. If this is set to 'scalar', only the violating "

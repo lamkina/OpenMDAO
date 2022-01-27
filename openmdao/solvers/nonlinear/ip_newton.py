@@ -114,6 +114,7 @@ class IPNewtonSolver(NonlinearSolver):
             default=True,
             desc="When the option is true, the unsteady formulation of the Newton linear system is active.",
         )
+        self.options.declare("mu_max", default=1e6, types=float, desc="Maximum penalty parameter value.")
 
         self.supports["gradients"] = True
         self.supports["implicit_components"] = True
@@ -281,9 +282,16 @@ class IPNewtonSolver(NonlinearSolver):
         """
         system = self._system()
 
-        # Set all the initial paramters
+        # Set the intial penalty
         self._mu_lower = np.full(np.count_nonzero(self._lower_finite_mask), self.options["mu"])
         self._mu_upper = np.full(np.count_nonzero(self._upper_finite_mask), self.options["mu"])
+
+        # Set the penalty in the line search if the unsteady formulation is being used.
+        if self.linesearch.options["penalty_residual"]:
+            self.linesearch.mu_upper = self._mu_upper
+            self.linesearch.mu_lower = self._mu_lower
+
+        # Set the pseudo-time step
         self._tau = self.options["tau"]
 
         if self.options["debug_print"]:
@@ -315,11 +323,8 @@ class IPNewtonSolver(NonlinearSolver):
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
 
-    def _update_penalty(self):
-        # TODO: write docstring
+    def _compute_bound_violation(self):
         system = self._system()
-        beta = self.options["beta"]
-        rho = self.options["rho"]
 
         # Get the states and find the length of the state vector
         u = system._outputs.asarray()
@@ -346,17 +351,21 @@ class IPNewtonSolver(NonlinearSolver):
         # We want to set all values of d_alpha < 0 to 0 so that
         # the penalty logic and formula won't do anything for those
         # terms.
-        d_alpha_lower = np.where(d_alpha_lower < 0, 0, d_alpha_lower)
-        d_alpha_upper = np.where(d_alpha_upper < 0, 0, d_alpha_upper)
+        self._d_alpha_lower = np.where(d_alpha_lower < 0, 0, d_alpha_lower)
+        self._d_alpha_upper = np.where(d_alpha_upper < 0, 0, d_alpha_upper)
+
+    def _update_penalty(self):
+        beta = self.options["beta"]
+        rho = self.options["rho"]
 
         # Only calculate penalty terms for states with finite bounds.
         # Reducing the array to finite values is built into the method
         # for computing d_alpha
-        if d_alpha_lower.size > 0:
-            self._mu_lower *= beta * d_alpha_lower + rho
+        if self._d_alpha_lower.size > 0:
+            self._mu_lower *= beta * self._d_alpha_lower + rho
 
-        if d_alpha_upper.size > 0:
-            self._mu_upper *= beta * d_alpha_upper + rho
+        if self._d_alpha_upper.size > 0:
+            self._mu_upper *= beta * self._d_alpha_upper + rho
 
     def _ip_jac_update(self, jac):
         # TODO: Write docstring
@@ -382,7 +391,7 @@ class IPNewtonSolver(NonlinearSolver):
             dp_du_arr[self._lower_finite_mask] += -self._mu_lower / (t_lower + 1e-10)
 
         if t_upper.size > 0:
-            dp_du_arr[self._upper_finite_mask] += self._mu_upper / (t_upper + 1e-10)
+            dp_du_arr[self._upper_finite_mask] += -self._mu_upper / (t_upper + 1e-10)
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
             mtx = mtx.toarray()
@@ -401,7 +410,7 @@ class IPNewtonSolver(NonlinearSolver):
         size_u = len(system._outputs.asarray())
 
         mtx = jac._int_mtx._matrix
-        pt_mtx = np.diag(np.full(size_u), self._tau)
+        pt_mtx = np.diag(np.full(size_u, self._tau))
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
             mtx = mtx.toarray()
@@ -431,6 +440,11 @@ class IPNewtonSolver(NonlinearSolver):
         if self._iter_count > 0:
             if self.options["interior_penalty"]:
                 self._update_penalty()
+                # Only set the penalty in the line search for the unsteady formulation.
+                # Otherwise, the penalty isn't used in the line search.
+                if self.linesearch.options["penalty_residual"]:
+                    self.linesearch.mu_lower = self._mu_lower
+                    self.linesearch.mu_upper = self._mu_upper
 
             if self.options["pseudo_transient"]:
                 self._tau *= self.options["gamma"]
@@ -458,6 +472,14 @@ class IPNewtonSolver(NonlinearSolver):
         self._linearize()
 
         self.linear_solver.solve("fwd")
+
+        system._outputs += system._vectors["output"]["linear"]
+
+        self._compute_bound_violation()
+
+        # Move the states back for either another iteration of the
+        # penalty update or the start of the linesearch
+        system._outputs -= system._vectors["output"]["linear"]
 
         if self.linesearch:
             self.linesearch._do_subsolve = do_subsolve

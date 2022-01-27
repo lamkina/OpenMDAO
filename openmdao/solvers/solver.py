@@ -823,6 +823,8 @@ class LinesearchSolver(NonlinearSolver):
         self._do_subsolve = False
         self._lower_bounds = None
         self._upper_bounds = None
+        self._lower_finite_mask = None
+        self._upper_finite_mask = None
 
     def _declare_options(self):
         """
@@ -897,6 +899,9 @@ class LinesearchSolver(NonlinearSolver):
                 start = end
         else:
             self._lower_bounds = self._upper_bounds = None
+
+        self._lower_finite_mask = np.isfinite(self._lower_bounds)
+        self._upper_finite_mask = np.isfinite(self._upper_bounds)
 
     def _enforce_bounds(self, step, alpha):
         """

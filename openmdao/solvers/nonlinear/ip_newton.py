@@ -63,6 +63,10 @@ class IPNewtonSolver(NonlinearSolver):
         # Pseudo-Transient time step
         self._tau = None
 
+        # Cache variable to store states for the penalty update algorithm
+        self._state_cache = None
+        self._du_cache = None
+
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
@@ -323,49 +327,51 @@ class IPNewtonSolver(NonlinearSolver):
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
 
-    def _compute_bound_violation(self):
-        system = self._system()
-
-        # Get the states and find the length of the state vector
-        u = system._outputs.asarray()
-        du = system._vectors["output"]["linear"].asarray()
-
-        # Initialize d_alpha to zeros
-        # We only want to store and calculate d_alpha for states that
-        # have bounds
-        d_alpha_lower = np.zeros(np.count_nonzero(self._lower_finite_mask))
-        d_alpha_upper = np.zeros(np.count_nonzero(self._upper_finite_mask))
-
-        # Compute d_alpha for all states with finite bounds
-        t_lower = self._lower_bounds[self._lower_finite_mask] - u[self._lower_finite_mask]
-        t_upper = u[self._upper_finite_mask] - self._upper_bounds[self._upper_finite_mask]
-
-        d_alpha_lower = t_lower / np.abs(du[self._lower_finite_mask])
-        d_alpha_upper = t_upper / np.abs(du[self._upper_finite_mask])
-
-        # ==============================================================
-        # d_alpha > 0 means that the state has violated a bound
-        # d_alpha < 0 means that the state has not violated a bound
-        # ==============================================================
-
-        # We want to set all values of d_alpha < 0 to 0 so that
-        # the penalty logic and formula won't do anything for those
-        # terms.
-        self._d_alpha_lower = np.where(d_alpha_lower < 0, 0, d_alpha_lower)
-        self._d_alpha_upper = np.where(d_alpha_upper < 0, 0, d_alpha_upper)
-
     def _update_penalty(self):
         beta = self.options["beta"]
         rho = self.options["rho"]
 
+        # Get the states and find the length of the state vector
+        u = self._state_cache
+        du = self._du_cache
+
+        lb = self._lower_bounds
+        ub = self._upper_bounds
+
+        lb_mask = self._lower_finite_mask
+        ub_mask = self._upper_finite_mask
+
+        # Initialize d_alpha to zeros
+        # We only want to store and calculate d_alpha for states that
+        # have bounds
+        d_alpha_lower = np.zeros(np.count_nonzero(lb_mask))
+        d_alpha_upper = np.zeros(np.count_nonzero(ub_mask))
+
+        # Compute d_alpha for all states with finite bounds
+        t_lower = lb[lb_mask] - (u[lb_mask] + du[lb_mask])
+        t_upper = (u[ub_mask] + du[ub_mask]) - ub[ub_mask]
+
+        # d_alpha > 0 means that the state has violated a bound
+        # d_alpha < 0 means that the state has not violated a bound
+        d_alpha_lower = t_lower / np.abs(du[lb_mask])
+        d_alpha_upper = t_upper / np.abs(du[ub_mask])
+
+        # We want to set all values of d_alpha < 0 to 0 so that the
+        # penalty logic and formula won't do anything for those terms
+        d_alpha_lower = np.where(d_alpha_lower < 0, 0, d_alpha_lower)
+        d_alpha_upper = np.where(d_alpha_upper < 0, 0, d_alpha_upper)
+
         # Only calculate penalty terms for states with finite bounds.
         # Reducing the array to finite values is built into the method
         # for computing d_alpha
-        if self._d_alpha_lower.size > 0:
-            self._mu_lower *= beta * self._d_alpha_lower + rho
+        if d_alpha_lower.size > 0:
+            self._mu_lower *= beta * d_alpha_lower + rho
 
-        if self._d_alpha_upper.size > 0:
-            self._mu_upper *= beta * self._d_alpha_upper + rho
+        if d_alpha_upper.size > 0:
+            self._mu_upper *= beta * d_alpha_upper + rho
+
+        print(f"MU UPPER: {self._mu_upper}")
+        print(f"MU LOWER: {self._mu_lower}")
 
     def _ip_jac_update(self, jac):
         # TODO: Write docstring
@@ -388,10 +394,10 @@ class IPNewtonSolver(NonlinearSolver):
         t_upper = self._upper_bounds[self._upper_finite_mask] - u[self._upper_finite_mask]
 
         if t_lower.size > 0:
-            dp_du_arr[self._lower_finite_mask] += -self._mu_lower / (t_lower + 1e-10)
+            dp_du_arr[self._lower_finite_mask] -= self._mu_lower / (t_lower + 1e-10)
 
         if t_upper.size > 0:
-            dp_du_arr[self._upper_finite_mask] += -self._mu_upper / (t_upper + 1e-10)
+            dp_du_arr[self._upper_finite_mask] -= self._mu_upper / (t_upper + 1e-10)
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
             mtx = mtx.toarray()
@@ -410,7 +416,7 @@ class IPNewtonSolver(NonlinearSolver):
         size_u = len(system._outputs.asarray())
 
         mtx = jac._int_mtx._matrix
-        pt_mtx = np.diag(np.full(size_u, self._tau))
+        pt_mtx = np.diag(1 / np.full(size_u, self._tau))
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
             mtx = mtx.toarray()
@@ -473,13 +479,10 @@ class IPNewtonSolver(NonlinearSolver):
 
         self.linear_solver.solve("fwd")
 
-        system._outputs += system._vectors["output"]["linear"]
-
-        self._compute_bound_violation()
-
-        # Move the states back for either another iteration of the
-        # penalty update or the start of the linesearch
-        system._outputs -= system._vectors["output"]["linear"]
+        # We need to cache the states and newton step for the adaptive
+        # penalty algorithm.
+        self._state_cache = system._outputs.asarray().copy()
+        self._du_cache = system._vectors["output"]["linear"].asarray().copy()
 
         if self.linesearch:
             self.linesearch._do_subsolve = do_subsolve

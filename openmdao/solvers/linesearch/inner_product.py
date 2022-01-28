@@ -542,7 +542,7 @@ class InnerProductLS(LinesearchSolver):
 
                 self._mpi_print(self._iter_count, phi, s_k)
 
-    def _secant(self, rec):
+    def _secant(self):
         self.SOLVER = "LS: IP SECANT"
         options = self.options
         maxiter = options["maxiter"]

@@ -3,7 +3,7 @@ import weakref
 
 from openmdao.utils.mpi import MPI
 
-_norec_funcs = frozenset(['_run_apply', '_compute_totals'])
+_norec_funcs = frozenset(["_run_apply", "_compute_totals"])
 
 
 class _RecIteration(object):
@@ -37,8 +37,8 @@ class _RecIteration(object):
         """
         print()
         for name, iter_count in reversed(self.stack):
-            print('^^^', name, iter_count)
-        print(60 * '^')
+            print("^^^", name, iter_count)
+        print(60 * "^")
 
     def get_formatted_iteration_coordinate(self):
         """
@@ -51,23 +51,23 @@ class _RecIteration(object):
         str :
             the iteration coordinate formatted in our proprietary way.
         """
-        separator = '|'
+        separator = "|"
 
         # prefix
         if self.prefix:
-            prefix = '%s_' % self.prefix
+            prefix = "%s_" % self.prefix
         else:
-            prefix = ''
+            prefix = ""
 
         if MPI:
-            prefix += 'rank%d:' % MPI.COMM_WORLD.rank
+            prefix += "rank%d:" % MPI.COMM_WORLD.rank
         else:
-            prefix += 'rank0:'
+            prefix += "rank0:"
 
         # iteration hierarchy
         coord_list = []
         for name, iter_count in self.stack:
-            coord_list.append('{}{}{}'.format(name, separator, iter_count))
+            coord_list.append("{}{}{}".format(name, separator, iter_count))
 
         return prefix + separator.join(coord_list)
 
@@ -143,7 +143,21 @@ class Recording(object):
         self.abs = 0
         self.rel = 0
 
+        # Interior penalty specific parameters
+        self.mu_upper = None
+        self.mu_lower = None
+
+        # Pseudo-transient specific parameters
+        self.tau = None
+
+        # Line search specific parameters
+        self.alpha = None
+
+        # Jacobian condition number
+        self.kappa = None
+
         from openmdao.solvers.solver import Solver
+
         self._is_solver = isinstance(recording_requester, Solver)
 
     def __enter__(self):
@@ -170,7 +184,14 @@ class Recording(object):
         requester = self.recording_requester()
         if requester._recording_iter._norec_refcount == 0:
             if self._is_solver:
-                requester.record_iteration(abs=self.abs, rel=self.rel)
+                requester.record_iteration(
+                    abs=self.abs,
+                    rel=self.rel,
+                    mu_upper=self.mu_upper,
+                    mu_lower=self.mu_lower,
+                    tau=self.tau,
+                    alpha=self.alpha,
+                )
             else:
                 requester.record_iteration()
 

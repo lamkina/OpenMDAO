@@ -1,13 +1,15 @@
 """Define the IPNewtonSolver class."""
 
-
+import os
 import numpy as np
 from scipy.sparse import csc_matrix
 
+from openmdao.core.analysis_error import AnalysisError
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
+from openmdao.utils.om_warnings import issue_warning, SolverWarning
 
 
 class IPNewtonSolver(NonlinearSolver):
@@ -501,6 +503,124 @@ class IPNewtonSolver(NonlinearSolver):
 
         # Enable local fd
         system._owns_approx_jac = approx_status
+
+    def _solve(self):
+        """
+        Run the iterative solver.
+        """
+        maxiter = self.options["maxiter"]
+        atol = self.options["atol"]
+        rtol = self.options["rtol"]
+        iprint = self.options["iprint"]
+        stall_limit = self.options["stall_limit"]
+        stall_tol = self.options["stall_tol"]
+
+        self._mpi_print_header()
+
+        self._iter_count = 0
+        norm0, norm = self._iter_initialize()
+
+        self._norm0 = norm0
+
+        self._mpi_print(self._iter_count, norm, norm / norm0)
+
+        stalled = False
+        stall_count = 0
+        if stall_limit > 0:
+            stall_norm = norm0
+
+        while self._iter_count < maxiter and norm > atol and norm / norm0 > rtol and not stalled:
+            with Recording(type(self).__name__, self._iter_count, self) as rec:
+
+                if stall_count == 3 and not self.linesearch.options["print_bound_enforce"]:
+
+                    self.linesearch.options["print_bound_enforce"] = True
+
+                    if self._system().pathname:
+                        pathname = f"{self._system().pathname}."
+                    else:
+                        pathname = ""
+
+                    msg = (
+                        f"Your model has stalled three times and may be violating the bounds. "
+                        f"In the future, turn on print_bound_enforce in your solver options "
+                        f"here: \n{pathname}nonlinear_solver.linesearch.options"
+                        f"['print_bound_enforce']=True. "
+                        f"\nThe bound(s) being violated now are:\n"
+                    )
+                    issue_warning(msg, category=SolverWarning)
+
+                    self._single_iteration()
+                    self.linesearch.options["print_bound_enforce"] = False
+                else:
+                    self._single_iteration()
+
+                self._iter_count += 1
+                self._run_apply()
+                norm = self._iter_get_norm()
+
+                # Save the norm values in the context manager so they can also be recorded.
+                rec.abs = norm
+                if norm0 == 0:
+                    norm0 = 1
+                rec.rel = norm / norm0
+                rec.mu_upper = self._mu_upper
+                rec.mu_lower = self._mu_lower
+                rec.tau = self._tau
+
+                # Check if convergence is stalled.
+                if stall_limit > 0:
+                    rel_norm = rec.rel
+                    norm_diff = np.abs(stall_norm - rel_norm)
+                    if norm_diff <= stall_tol:
+                        stall_count += 1
+                        if stall_count >= stall_limit:
+                            stalled = True
+                    else:
+                        stall_count = 0
+                        stall_norm = rel_norm
+
+            self._mpi_print(self._iter_count, norm, norm / norm0)
+
+        system = self._system()
+
+        # flag for the print statements. we only print on root if USE_PROC_FILES is not set to True
+        print_flag = system.comm.rank == 0 or os.environ.get("USE_PROC_FILES")
+
+        prefix = self._solver_info.prefix + self.SOLVER
+
+        # Solver terminated early because a Nan in the norm doesn't satisfy the while-loop
+        # conditionals.
+        if np.isinf(norm) or np.isnan(norm):
+            msg = "Solver '{}' on system '{}': residuals contain 'inf' or 'NaN' after {} " + "iterations."
+            if iprint > -1 and print_flag:
+                print(prefix + msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+            # Raise AnalysisError if requested.
+            if self.options["err_on_non_converge"]:
+                raise AnalysisError(msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+        # Solver hit maxiter without meeting desired tolerances.
+        # Or solver stalled.
+        elif (norm > atol and norm / norm0 > rtol) or stalled:
+
+            if stalled:
+                msg = "Solver '{}' on system '{}' stalled after {} iterations."
+            else:
+                msg = "Solver '{}' on system '{}' failed to converge in {} iterations."
+
+            if iprint > -1 and print_flag:
+                print(prefix + msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+            # Raise AnalysisError if requested.
+            if self.options["err_on_non_converge"]:
+                raise AnalysisError(msg.format(self.SOLVER, system.pathname, self._iter_count))
+
+        # Solver converged
+        elif iprint == 1 and print_flag:
+            print(prefix + " Converged in {} iterations".format(self._iter_count))
+        elif iprint == 2 and print_flag:
+            print(prefix + " Converged")
 
     def _set_complex_step_mode(self, active):
         """

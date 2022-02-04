@@ -327,6 +327,7 @@ class IPNewtonSolver(NonlinearSolver):
         norm = self._iter_get_norm()
 
         norm0 = norm if norm != 0.0 else 1.0
+
         return norm0, norm
 
     def _update_penalty(self):
@@ -371,9 +372,6 @@ class IPNewtonSolver(NonlinearSolver):
 
         if d_alpha_upper.size > 0:
             self._mu_upper *= beta * d_alpha_upper + rho
-
-        print(f"MU UPPER: {self._mu_upper}")
-        print(f"MU LOWER: {self._mu_lower}")
 
     def _ip_jac_update(self, jac):
         # TODO: Write docstring

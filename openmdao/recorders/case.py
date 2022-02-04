@@ -95,44 +95,60 @@ class Case(object):
         A version number specifying the format of array data, if not numpy arrays.
     """
 
-    def __init__(self, source, data, prom2abs, abs2prom, abs2meta, conns, auto_ivc_map, var_info,
-                 data_format=None):
+    def __init__(self, source, data, prom2abs, abs2prom, abs2meta, conns, auto_ivc_map, var_info, data_format=None):
         """
         Initialize.
         """
         self.source = source
         self._format_version = data_format
 
-        if 'iteration_coordinate' in data.keys():
-            self.name = data['iteration_coordinate']
-            parts = self.name.split('|')
+        if "iteration_coordinate" in data.keys():
+            self.name = data["iteration_coordinate"]
+            parts = self.name.split("|")
             if len(parts) > 2:
-                self.parent = '|'.join(parts[:-2])
+                self.parent = "|".join(parts[:-2])
             else:
                 self.parent = None
-        elif 'case_name' in data.keys():
-            self.name = data['case_name']  # problem cases
+        elif "case_name" in data.keys():
+            self.name = data["case_name"]  # problem cases
             self.parent = None
         else:
             self.name = None
             self.parent = None
 
-        self.counter = data['counter']
-        self.timestamp = data['timestamp']
-        self.success = data['success']
-        self.msg = data['msg']
+        self.counter = data["counter"]
+        self.timestamp = data["timestamp"]
+        self.success = data["success"]
+        self.msg = data["msg"]
 
         # for a solver or problem case
-        self.abs_err = data['abs_err'] if 'abs_err' in data.keys() else None
-        self.rel_err = data['rel_err'] if 'rel_err' in data.keys() else None
+        self.abs_err = data["abs_err"] if "abs_err" in data.keys() else None
+        self.rel_err = data["rel_err"] if "rel_err" in data.keys() else None
+        self.tau = data["tau"] if "tau" in data.keys() else None
+
+        if "mu_upper" in data.keys():
+            if data["mu_upper"]:
+                self.mu_upper = np.frombuffer(data["mu_upper"], dtype=float)
+            else:
+                self.mu_upper = None
+        else:
+            self.mu_upper = None
+
+        if "mu_lower" in data.keys():
+            if data["mu_lower"]:
+                self.mu_lower = np.frombuffer(data["mu_lower"], dtype=float)
+            else:
+                self.mu_lower = None
+        else:
+            self.mu_lower = None
 
         # rename solver keys
-        if 'solver_inputs' in data.keys():
+        if "solver_inputs" in data.keys():
             if not isinstance(data, dict):
                 data = dict(zip(data.keys(), data))
-            data['inputs'] = data.pop('solver_inputs')
-            data['outputs'] = data.pop('solver_output')
-            data['residuals'] = data.pop('solver_residuals')
+            data["inputs"] = data.pop("solver_inputs")
+            data["outputs"] = data.pop("solver_output")
+            data["residuals"] = data.pop("solver_residuals")
 
         # default properties to None
         self.inputs = None
@@ -140,57 +156,69 @@ class Case(object):
         self.residuals = None
         self.derivatives = None
 
-        if 'inputs' in data.keys():
+        if "inputs" in data.keys():
             if data_format >= 3:
-                inputs = deserialize(data['inputs'], abs2meta, prom2abs, conns)
+                inputs = deserialize(data["inputs"], abs2meta, prom2abs, conns)
             elif data_format in (1, 2):
-                inputs = blob_to_array(data['inputs'])
+                inputs = blob_to_array(data["inputs"])
                 if type(inputs) is np.ndarray and not inputs.shape:
                     inputs = None
             else:
-                inputs = data['inputs']
+                inputs = data["inputs"]
             if inputs is not None:
-                self.inputs = PromAbsDict(inputs, prom2abs['input'], abs2prom['input'])
+                self.inputs = PromAbsDict(inputs, prom2abs["input"], abs2prom["input"])
 
-        if 'outputs' in data.keys():
+        if "outputs" in data.keys():
             if data_format >= 3:
-                outputs = deserialize(data['outputs'], abs2meta, prom2abs, conns)
+                outputs = deserialize(data["outputs"], abs2meta, prom2abs, conns)
             elif self._format_version in (1, 2):
-                outputs = blob_to_array(data['outputs'])
+                outputs = blob_to_array(data["outputs"])
                 if type(outputs) is np.ndarray and not outputs.shape:
                     outputs = None
             else:
-                outputs = data['outputs']
+                outputs = data["outputs"]
             if outputs is not None:
-                self.outputs = PromAbsDict(outputs, prom2abs['output'], abs2prom['output'],
-                                           in_prom2abs=prom2abs['input'],
-                                           auto_ivc_map=auto_ivc_map)
+                self.outputs = PromAbsDict(
+                    outputs,
+                    prom2abs["output"],
+                    abs2prom["output"],
+                    in_prom2abs=prom2abs["input"],
+                    auto_ivc_map=auto_ivc_map,
+                )
 
-        if 'residuals' in data.keys():
+        if "residuals" in data.keys():
             if data_format >= 3:
-                residuals = deserialize(data['residuals'], abs2meta, prom2abs, conns)
+                residuals = deserialize(data["residuals"], abs2meta, prom2abs, conns)
             elif data_format in (1, 2):
-                residuals = blob_to_array(data['residuals'])
+                residuals = blob_to_array(data["residuals"])
                 if type(residuals) is np.ndarray and not residuals.shape:
                     residuals = None
             else:
-                residuals = data['residuals']
+                residuals = data["residuals"]
             if residuals is not None:
-                self.residuals = PromAbsDict(residuals, prom2abs['output'], abs2prom['output'],
-                                             in_prom2abs=prom2abs['input'],
-                                             auto_ivc_map=auto_ivc_map)
+                self.residuals = PromAbsDict(
+                    residuals,
+                    prom2abs["output"],
+                    abs2prom["output"],
+                    in_prom2abs=prom2abs["input"],
+                    auto_ivc_map=auto_ivc_map,
+                )
 
-        if 'jacobian' in data.keys():
+        if "jacobian" in data.keys():
             if data_format >= 2:
-                jacobian = blob_to_array(data['jacobian'])
+                jacobian = blob_to_array(data["jacobian"])
                 if type(jacobian) is np.ndarray and not jacobian.shape:
                     jacobian = None
             else:
-                jacobian = data['jacobian']
+                jacobian = data["jacobian"]
             if jacobian is not None:
-                self.derivatives = PromAbsDict(jacobian, prom2abs['output'], abs2prom['output'],
-                                               in_prom2abs=prom2abs['input'],
-                                               auto_ivc_map=auto_ivc_map)
+                self.derivatives = PromAbsDict(
+                    jacobian,
+                    prom2abs["output"],
+                    abs2prom["output"],
+                    in_prom2abs=prom2abs["input"],
+                    auto_ivc_map=auto_ivc_map,
+                )
 
         # save var name & meta dict references for use by self._get_variables_of_type()
         self._prom2abs = prom2abs
@@ -211,7 +239,7 @@ class Case(object):
         str
             String representation of the case.
         """
-        return ' '.join([self.source, self.name, str(self.outputs)])
+        return " ".join([self.source, self.name, str(self.outputs)])
 
     def __getitem__(self, name):
         """
@@ -300,23 +328,25 @@ class Case(object):
         meta = self._abs2meta
 
         if name in meta:
-            return meta[name]['units']
+            return meta[name]["units"]
 
         proms = self._prom2abs
 
-        if name in proms['output']:
-            abs_name = proms['output'][name][0]
-            return meta[abs_name]['units']
+        if name in proms["output"]:
+            abs_name = proms["output"][name][0]
+            return meta[abs_name]["units"]
 
-        elif name in proms['input']:
-            if len(proms['input'][name]) > 1:
+        elif name in proms["input"]:
+            if len(proms["input"][name]) > 1:
                 # The promoted name maps to multiple absolute names, require absolute name.
-                msg = "Can't get units for the promoted name '%s' because it refers to " + \
-                      "multiple inputs: %s. Access the units using an absolute path name."
-                raise RuntimeError(msg % (name, str(proms['input'][name])))
+                msg = (
+                    "Can't get units for the promoted name '%s' because it refers to "
+                    + "multiple inputs: %s. Access the units using an absolute path name."
+                )
+                raise RuntimeError(msg % (name, str(proms["input"][name])))
 
-            abs_name = proms['input'][name][0]
-            return meta[abs_name]['units']
+            abs_name = proms["input"][name][0]
+            return meta[abs_name]["units"]
 
         raise KeyError('Variable name "{}" not found.'.format(name))
 
@@ -336,7 +366,7 @@ class Case(object):
         PromAbsDict
             Map of variables to their values.
         """
-        return self._get_variables_of_type('desvar', scaled, use_indices)
+        return self._get_variables_of_type("desvar", scaled, use_indices)
 
     def get_objectives(self, scaled=True, use_indices=True):
         """
@@ -354,7 +384,7 @@ class Case(object):
         PromAbsDict
             Map of variables to their values.
         """
-        return self._get_variables_of_type('objective', scaled, use_indices)
+        return self._get_variables_of_type("objective", scaled, use_indices)
 
     def get_constraints(self, scaled=True, use_indices=True):
         """
@@ -372,7 +402,7 @@ class Case(object):
         PromAbsDict
             Map of variables to their values.
         """
-        return self._get_variables_of_type('constraint', scaled, use_indices)
+        return self._get_variables_of_type("constraint", scaled, use_indices)
 
     def get_responses(self, scaled=True, use_indices=True):
         """
@@ -390,23 +420,25 @@ class Case(object):
         PromAbsDict
             Map of variables to their values.
         """
-        return self._get_variables_of_type('response', scaled, use_indices)
+        return self._get_variables_of_type("response", scaled, use_indices)
 
-    def list_inputs(self,
-                    val=True,
-                    prom_name=False,
-                    units=False,
-                    shape=False,
-                    desc=False,
-                    hierarchical=True,
-                    print_arrays=False,
-                    tags=None,
-                    includes=None,
-                    excludes=None,
-                    out_stream=_DEFAULT_OUT_STREAM,
-                    values=None,
-                    print_min=False,
-                    print_max=False):
+    def list_inputs(
+        self,
+        val=True,
+        prom_name=False,
+        units=False,
+        shape=False,
+        desc=False,
+        hierarchical=True,
+        print_arrays=False,
+        tags=None,
+        includes=None,
+        excludes=None,
+        out_stream=_DEFAULT_OUT_STREAM,
+        values=None,
+        print_min=False,
+        print_max=False,
+    ):
         """
         Return and optionally log a list of input names and other optional information.
 
@@ -460,29 +492,32 @@ class Case(object):
         inputs = []
 
         if values is not None:
-            issue_warning("'value' is deprecated and will be removed in 4.0. "
-                          "Please index in using 'val'")
+            issue_warning("'value' is deprecated and will be removed in 4.0. " "Please index in using 'val'")
         elif not val and values:
             values = True
         else:
             values = val
 
         if isinstance(includes, str):
-            includes = [includes, ]
+            includes = [
+                includes,
+            ]
 
         if isinstance(excludes, str):
-            excludes = [excludes, ]
+            excludes = [
+                excludes,
+            ]
 
         if self.inputs is not None:
             print_options = np.get_printoptions()
-            np_precision = print_options['precision']
+            np_precision = print_options["precision"]
 
             for var_name in self.inputs.absolute_names():
                 # Filter based on tags
-                if tags and not (make_set(tags) & make_set(meta[var_name]['tags'])):
+                if tags and not (make_set(tags) & make_set(meta[var_name]["tags"])):
                     continue
 
-                var_name_prom = self._abs2prom['input'][var_name]
+                var_name_prom = self._abs2prom["input"][var_name]
 
                 if not match_prom_or_abs(var_name, var_name_prom, includes, excludes):
                     continue
@@ -491,57 +526,62 @@ class Case(object):
 
                 var_meta = {}
                 if values:
-                    var_meta['val'] = val
-                    var_meta['value'] = val
+                    var_meta["val"] = val
+                    var_meta["value"] = val
                     if isinstance(val, np.ndarray):
                         if print_min:
-                            var_meta['min'] = np.round(np.min(val), np_precision)
+                            var_meta["min"] = np.round(np.min(val), np_precision)
 
                         if print_max:
-                            var_meta['max'] = np.round(np.max(val), np_precision)
+                            var_meta["max"] = np.round(np.max(val), np_precision)
 
                 if prom_name:
-                    var_meta['prom_name'] = var_name_prom
+                    var_meta["prom_name"] = var_name_prom
                 if units:
-                    var_meta['units'] = meta[var_name]['units']
+                    var_meta["units"] = meta[var_name]["units"]
                 if shape:
-                    var_meta['shape'] = val.shape
+                    var_meta["shape"] = val.shape
                 if desc:
-                    var_meta['desc'] = meta[var_name]['desc']
+                    var_meta["desc"] = meta[var_name]["desc"]
 
                 inputs.append((var_name, var_meta))
 
         if out_stream:
             if self.inputs:
-                self._write_table('input', inputs, hierarchical, print_arrays, out_stream)
+                self._write_table("input", inputs, hierarchical, print_arrays, out_stream)
             else:
                 ostream = sys.stdout if out_stream is _DEFAULT_OUT_STREAM else out_stream
-                ostream.write('WARNING: Inputs not recorded. Make sure your recording ' +
-                              'settings have record_inputs set to True\n')
+                ostream.write(
+                    "WARNING: Inputs not recorded. Make sure your recording "
+                    + "settings have record_inputs set to True\n"
+                )
 
         return inputs
 
-    def list_outputs(self,
-                     explicit=True, implicit=True,
-                     val=True,
-                     prom_name=False,
-                     residuals=False,
-                     residuals_tol=None,
-                     units=False,
-                     shape=False,
-                     bounds=False,
-                     scaling=False,
-                     desc=False,
-                     hierarchical=True,
-                     print_arrays=False,
-                     tags=None,
-                     includes=None,
-                     excludes=None,
-                     list_autoivcs=False,
-                     out_stream=_DEFAULT_OUT_STREAM,
-                     values=None,
-                     print_min=False,
-                     print_max=False):
+    def list_outputs(
+        self,
+        explicit=True,
+        implicit=True,
+        val=True,
+        prom_name=False,
+        residuals=False,
+        residuals_tol=None,
+        units=False,
+        shape=False,
+        bounds=False,
+        scaling=False,
+        desc=False,
+        hierarchical=True,
+        print_arrays=False,
+        tags=None,
+        includes=None,
+        excludes=None,
+        list_autoivcs=False,
+        out_stream=_DEFAULT_OUT_STREAM,
+        values=None,
+        print_min=False,
+        print_max=False,
+    ):
         """
         Return and optionally log a list of output names and other optional information.
 
@@ -612,31 +652,34 @@ class Case(object):
         impl_outputs = []
 
         if values is not None:
-            issue_warning("'value' is deprecated and will be removed in 4.0. "
-                          "Please index in using 'val'")
+            issue_warning("'value' is deprecated and will be removed in 4.0. " "Please index in using 'val'")
         elif not val and values:
             values = True
         else:
             values = val
 
         if isinstance(includes, str):
-            includes = [includes, ]
+            includes = [
+                includes,
+            ]
 
         if isinstance(excludes, str):
-            excludes = [excludes, ]
+            excludes = [
+                excludes,
+            ]
 
         print_options = np.get_printoptions()
-        np_precision = print_options['precision']
+        np_precision = print_options["precision"]
 
         for var_name in self.outputs.absolute_names():
-            if not list_autoivcs and var_name.startswith('_auto_ivc.'):
+            if not list_autoivcs and var_name.startswith("_auto_ivc."):
                 continue
 
             # Filter based on tags
-            if tags and not (make_set(tags) & make_set(meta[var_name]['tags'])):
+            if tags and not (make_set(tags) & make_set(meta[var_name]["tags"])):
                 continue
 
-            var_name_prom = self._abs2prom['output'][var_name]
+            var_name_prom = self._abs2prom["output"][var_name]
 
             if not match_prom_or_abs(var_name, var_name_prom, includes, excludes):
                 continue
@@ -647,38 +690,38 @@ class Case(object):
                 if residuals_tol and np.linalg.norm(resids) < residuals_tol:
                     continue
             else:
-                resids = 'Not Recorded'
+                resids = "Not Recorded"
 
             val = self.outputs[var_name]
 
             var_meta = {}
             if values:
-                var_meta['val'] = val
-                var_meta['value'] = val
+                var_meta["val"] = val
+                var_meta["value"] = val
                 if isinstance(val, np.ndarray):
                     if print_min:
-                        var_meta['min'] = np.round(np.min(val), np_precision)
+                        var_meta["min"] = np.round(np.min(val), np_precision)
 
                     if print_max:
-                        var_meta['max'] = np.round(np.max(val), np_precision)
+                        var_meta["max"] = np.round(np.max(val), np_precision)
             if prom_name:
-                var_meta['prom_name'] = var_name_prom
+                var_meta["prom_name"] = var_name_prom
             if residuals:
-                var_meta['resids'] = resids
+                var_meta["resids"] = resids
             if units:
-                var_meta['units'] = meta[var_name]['units']
+                var_meta["units"] = meta[var_name]["units"]
             if shape:
-                var_meta['shape'] = val.shape
+                var_meta["shape"] = val.shape
             if bounds:
-                var_meta['lower'] = meta[var_name]['lower']
-                var_meta['upper'] = meta[var_name]['upper']
+                var_meta["lower"] = meta[var_name]["lower"]
+                var_meta["upper"] = meta[var_name]["upper"]
             if scaling:
-                var_meta['ref'] = meta[var_name]['ref']
-                var_meta['ref0'] = meta[var_name]['ref0']
-                var_meta['res_ref'] = meta[var_name]['res_ref']
+                var_meta["ref"] = meta[var_name]["ref"]
+                var_meta["ref0"] = meta[var_name]["ref0"]
+                var_meta["res_ref"] = meta[var_name]["res_ref"]
             if desc:
-                var_meta['desc'] = meta[var_name]['desc']
-            if meta[var_name]['explicit']:
+                var_meta["desc"] = meta[var_name]["desc"]
+            if meta[var_name]["explicit"]:
                 expl_outputs.append((var_name, var_meta))
             else:
                 impl_outputs.append((var_name, var_meta))
@@ -686,12 +729,14 @@ class Case(object):
         if out_stream:
             if not self.outputs:
                 ostream = sys.stdout if out_stream is _DEFAULT_OUT_STREAM else out_stream
-                ostream.write('WARNING: Outputs not recorded. Make sure your recording ' +
-                              'settings have record_outputs set to True\n')
+                ostream.write(
+                    "WARNING: Outputs not recorded. Make sure your recording "
+                    + "settings have record_outputs set to True\n"
+                )
             if explicit:
-                self._write_table('explicit', expl_outputs, hierarchical, print_arrays, out_stream)
+                self._write_table("explicit", expl_outputs, hierarchical, print_arrays, out_stream)
             if implicit:
-                self._write_table('implicit', impl_outputs, hierarchical, print_arrays, out_stream)
+                self._write_table("implicit", impl_outputs, hierarchical, print_arrays, out_stream)
 
         if explicit and implicit:
             return expl_outputs + impl_outputs
@@ -700,7 +745,7 @@ class Case(object):
         elif implicit:
             return impl_outputs
         else:
-            raise RuntimeError('You have excluded both Explicit and Implicit components.')
+            raise RuntimeError("You have excluded both Explicit and Implicit components.")
 
     def _write_table(self, var_type, var_data, hierarchical, print_arrays, out_stream):
         """
@@ -733,27 +778,34 @@ class Case(object):
             var_dict[name] = vals
 
         # determine pathname of the system
-        if self.source in ('root', 'driver', 'problem', 'root.nonlinear_solver'):
-            pathname = ''
-        elif '|' in self.source:
+        if self.source in ("root", "driver", "problem", "root.nonlinear_solver"):
+            pathname = ""
+        elif "|" in self.source:
             pathname = get_source_system(self.source)
         else:
-            pathname = self.source.replace('root.', '')
-            if pathname.endswith('.nonlinear_solver'):
+            pathname = self.source.replace("root.", "")
+            if pathname.endswith(".nonlinear_solver"):
                 pathname = pathname[:-17]  # len('.nonlinear_solver') == 17
 
         # vars should be in execution order
-        if 'execution_order' in self._var_info:
-            var_order = self._var_info['execution_order']
+        if "execution_order" in self._var_info:
+            var_order = self._var_info["execution_order"]
             var_list = [var_name for var_name in var_order if var_name in var_dict]
         else:
             # don't have execution order, just sort for determinism
             var_list = sorted(var_dict.keys())
 
-        top_name = pathname if pathname else 'model'
-        write_var_table(pathname, var_list, var_type, var_dict,
-                        hierarchical=hierarchical, top_name=top_name,
-                        print_arrays=print_arrays, out_stream=out_stream)
+        top_name = pathname if pathname else "model"
+        write_var_table(
+            pathname,
+            var_list,
+            var_type,
+            var_dict,
+            hierarchical=hierarchical,
+            top_name=top_name,
+            print_arrays=print_arrays,
+            out_stream=out_stream,
+        )
 
     def _get_variables_of_type(self, var_type, scaled=False, use_indices=False):
         """
@@ -779,7 +831,7 @@ class Case(object):
             return PromAbsDict({}, self._prom2abs, self._abs2prom)
 
         abs2meta = self._abs2meta
-        prom2abs = self._prom2abs['input']
+        prom2abs = self._prom2abs["input"]
         conns = self._conns
         auto_ivc_map = self._auto_ivc_map
 
@@ -787,11 +839,11 @@ class Case(object):
         update_vals = scaled or use_indices
         for name in self.outputs.absolute_names():
             if name in abs2meta:
-                type_match = var_type in abs2meta[name]['type']
+                type_match = var_type in abs2meta[name]["type"]
             elif name in prom2abs:
                 abs_name = prom2abs[name][0]
                 src_name = conns[abs_name]
-                type_match = var_type in abs2meta[src_name]['type']
+                type_match = var_type in abs2meta[src_name]["type"]
 
             if type_match:
                 if name in auto_ivc_map:
@@ -801,17 +853,22 @@ class Case(object):
                 ret_vars[return_name] = val = self.outputs[name].copy()
                 if update_vals and name in self._var_info:
                     meta = self._var_info[name]
-                    if use_indices and meta['indices'] is not None:
-                        val = val[meta['indices']]
+                    if use_indices and meta["indices"] is not None:
+                        val = val[meta["indices"]]
                     if scaled:
-                        if meta['total_adder'] is not None:
-                            val += meta['total_adder']
-                        if meta['total_scaler'] is not None:
-                            val *= meta['total_scaler']
+                        if meta["total_adder"] is not None:
+                            val += meta["total_adder"]
+                        if meta["total_scaler"] is not None:
+                            val *= meta["total_scaler"]
                     ret_vars[return_name] = val
 
-        return PromAbsDict(ret_vars, self._prom2abs['output'], self._abs2prom['output'],
-                           in_prom2abs=prom2abs, auto_ivc_map=auto_ivc_map)
+        return PromAbsDict(
+            ret_vars,
+            self._prom2abs["output"],
+            self._abs2prom["output"],
+            in_prom2abs=prom2abs,
+            auto_ivc_map=auto_ivc_map,
+        )
 
 
 class PromAbsDict(dict):
@@ -852,8 +909,7 @@ class PromAbsDict(dict):
         Separator character for derivative keys.
     """
 
-    def __init__(self, values, prom2abs, abs2prom, data_format=current_version,
-                 in_prom2abs=None, auto_ivc_map=None):
+    def __init__(self, values, prom2abs, abs2prom, data_format=current_version, in_prom2abs=None, auto_ivc_map=None):
         """
         Initialize.
         """
@@ -865,9 +921,9 @@ class PromAbsDict(dict):
         self._auto_ivc_map = auto_ivc_map
 
         if data_format <= 8:
-            DERIV_KEY_SEP = self._DERIV_KEY_SEP = ','
+            DERIV_KEY_SEP = self._DERIV_KEY_SEP = ","
         else:
-            DERIV_KEY_SEP = self._DERIV_KEY_SEP = '!'
+            DERIV_KEY_SEP = self._DERIV_KEY_SEP = "!"
 
         if isinstance(values, dict):
             # dict of values, keyed on either absolute or promoted names
@@ -971,7 +1027,7 @@ class PromAbsDict(dict):
         else:
             abs_wrt = [wrt]
 
-        abs_keys = ['%s%s%s' % (o, DERIV_KEY_SEP, w) for o, w in itertools.product(abs_of, abs_wrt)]
+        abs_keys = ["%s%s%s" % (o, DERIV_KEY_SEP, w) for o, w in itertools.product(abs_of, abs_wrt)]
 
         prom_of = of if of in prom2abs else abs2prom[of]
         if wrt in abs2prom:
@@ -1011,9 +1067,11 @@ class PromAbsDict(dict):
             # promoted name
             val = super().__getitem__(key)
             if val is _AMBIGOUS_PROM_NAME:
-                msg = "The promoted name '%s' is invalid because it refers to multiple " + \
-                      "inputs: %s. Access the value using an absolute path name or the " + \
-                      "connected output variable instead."
+                msg = (
+                    "The promoted name '%s' is invalid because it refers to multiple "
+                    + "inputs: %s. Access the value using an absolute path name or the "
+                    + "connected output variable instead."
+                )
                 raise RuntimeError(msg % (key, str(self._prom2abs[key])))
             else:
                 return val

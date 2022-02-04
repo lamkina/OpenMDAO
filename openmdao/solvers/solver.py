@@ -467,6 +467,9 @@ class Solver(object):
         data = {
             "abs": kwargs.get("abs") if self.recording_options["record_abs_error"] else None,
             "rel": kwargs.get("rel") if self.recording_options["record_rel_error"] else None,
+            "mu_upper": kwargs.get("mu_upper"),
+            "mu_lower": kwargs.get("mu_lower"),
+            "tau": kwargs.get("tau"),
             "input": {},
             "output": {},
             "residual": {},
@@ -902,38 +905,6 @@ class LinesearchSolver(NonlinearSolver):
 
         self._lower_finite_mask = np.isfinite(self._lower_bounds)
         self._upper_finite_mask = np.isfinite(self._upper_bounds)
-
-    def _enforce_bounds(self, step, alpha):
-        """
-        Enforce lower/upper bounds.
-
-        Modifies the vector of outputs and the step.
-
-        Parameters
-        ----------
-        step : <Vector>
-            Newton step; the backtracking is applied to this vector in-place.
-        alpha : float
-            Step size parameter.
-        """
-        system = self._system()
-        if not system._has_bounds:
-            return
-
-        options = self.options
-        method = options["bound_enforcement"]
-        lower = self._lower_bounds
-        upper = self._upper_bounds
-
-        if options["print_bound_enforce"]:
-            _print_violations(system._outputs, lower, upper)
-
-        if method == "vector":
-            _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
-        elif method == "scalar":
-            _enforce_bounds_scalar(system._outputs, step, alpha, lower, upper)
-        elif method == "wall":
-            _enforce_bounds_wall(system._outputs, step, alpha, lower, upper)
 
 
 class LinearSolver(Solver):

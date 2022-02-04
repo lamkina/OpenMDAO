@@ -188,7 +188,7 @@ class InnerProductLS(LinesearchSolver):
             error at the first iteration.
         """
 
-        self.SOLVER = "LS: IP BRKT"
+        self.SOLVER = "LS: IP INIT"
         system = self._system()
         s_b = 0.0  # Lower bracket step length
         s_a = self.alpha = self.options["alpha"]  # Upper brackt step length
@@ -212,6 +212,7 @@ class InnerProductLS(LinesearchSolver):
 
             self._run_apply()
             g_a, phi = self._linesearch_objective()
+            self._iter_count += 1
 
         except AnalysisError as err:
             self._solver_info.restore_cache(cache)
@@ -377,7 +378,7 @@ class InnerProductLS(LinesearchSolver):
                 else:
                     raise err
 
-        self._mpi_print(self._iter_count, phi, self.alpha)
+            self._mpi_print(self._iter_count, phi, self.alpha)
 
     def _inv_quad_interp(self, s_c, g_c):
         """Calls the inverse quadratic interpolation helper function

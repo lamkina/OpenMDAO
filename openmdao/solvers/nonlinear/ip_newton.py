@@ -10,6 +10,7 @@ from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
 from openmdao.utils.om_warnings import issue_warning, SolverWarning
+from openmdao.solvers.linear.linear_blsq import LinearBLSQ
 
 
 class IPNewtonSolver(NonlinearSolver):
@@ -173,6 +174,12 @@ class IPNewtonSolver(NonlinearSolver):
 
             self._lower_finite_mask = np.isfinite(self._lower_bounds)
             self._upper_finite_mask = np.isfinite(self._upper_bounds)
+
+            if isinstance(self.linear_solver, LinearBLSQ):
+                self.linear_solver.lower_bounds = self._lower_bounds
+                self.linear_solver.upper_bounds = self._upper_bounds
+
+            # TODO: Do isinstance check for linesearch
 
     def _setup_solvers(self, system, depth):
         """

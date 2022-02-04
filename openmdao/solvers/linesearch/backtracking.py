@@ -139,6 +139,38 @@ class ArmijoGoldsteinLS(LinesearchSolver):
         """
         return self._iter_get_norm()
 
+    def _enforce_bounds(self, step, alpha):
+        """
+        Enforce lower/upper bounds.
+
+        Modifies the vector of outputs and the step.
+
+        Parameters
+        ----------
+        step : <Vector>
+            Newton step; the backtracking is applied to this vector in-place.
+        alpha : float
+            Step size parameter.
+        """
+        system = self._system()
+        if not system._has_bounds:
+            return
+
+        options = self.options
+        method = options["bound_enforcement"]
+        lower = self._lower_bounds
+        upper = self._upper_bounds
+
+        if options["print_bound_enforce"]:
+            _print_violations(system._outputs, lower, upper)
+
+        if method == "vector":
+            _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
+        elif method == "scalar":
+            _enforce_bounds_scalar(system._outputs, step, alpha, lower, upper)
+        elif method == "wall":
+            _enforce_bounds_wall(system._outputs, step, alpha, lower, upper)
+
     def _iter_initialize(self):
         """
         Perform any necessary pre-processing operations.

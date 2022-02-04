@@ -148,13 +148,10 @@ class Recording(object):
         self.mu_lower = None
 
         # Pseudo-transient specific parameters
-        self.tau = None
+        self.tau = 0
 
         # Line search specific parameters
-        self.alpha = None
-
-        # Jacobian condition number
-        self.kappa = None
+        # self.alpha = None
 
         from openmdao.solvers.solver import Solver
 
@@ -185,12 +182,7 @@ class Recording(object):
         if requester._recording_iter._norec_refcount == 0:
             if self._is_solver:
                 requester.record_iteration(
-                    abs=self.abs,
-                    rel=self.rel,
-                    mu_upper=self.mu_upper,
-                    mu_lower=self.mu_lower,
-                    tau=self.tau,
-                    alpha=self.alpha,
+                    abs=self.abs, rel=self.rel, mu_upper=self.mu_upper, mu_lower=self.mu_lower, tau=self.tau,
                 )
             else:
                 requester.record_iteration()

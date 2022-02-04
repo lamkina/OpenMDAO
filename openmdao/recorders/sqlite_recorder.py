@@ -270,6 +270,7 @@ class SqliteRecorder(CaseRecorder):
                     "CREATE TABLE solver_iterations(id INTEGER PRIMARY KEY, "
                     "counter INT, iteration_coordinate TEXT, timestamp REAL, "
                     "success INT, msg TEXT, abs_err REAL, rel_err REAL, "
+                    "mu_upper TEXT, mu_lower TEXT, tau REAL, "
                     "solver_inputs TEXT, solver_output TEXT, solver_residuals TEXT)"
                 )
                 c.execute("CREATE INDEX solv_iter_ind on solver_iterations(iteration_coordinate)")
@@ -705,7 +706,6 @@ class SqliteRecorder(CaseRecorder):
             mu_upper = data["mu_upper"]
             mu_lower = data["mu_lower"]
             tau = data["tau"]
-            alpha = data["alpha"]
             inputs = data["input"]
             outputs = data["output"]
             residuals = data["residual"]
@@ -726,9 +726,9 @@ class SqliteRecorder(CaseRecorder):
 
                 c.execute(
                     "INSERT INTO solver_iterations(counter, iteration_coordinate, "
-                    "timestamp, success, msg, abs_err, rel_err, mu_upper, mu_lower, tau, alpha,"
+                    "timestamp, success, msg, abs_err, rel_err, mu_upper, mu_lower, tau,"
                     "solver_inputs, solver_output, solver_residuals) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         self._counter,
                         self._iteration_coordinate,
@@ -737,10 +737,9 @@ class SqliteRecorder(CaseRecorder):
                         metadata["msg"],
                         abs,
                         rel,
-                        mu_upper,
-                        mu_lower,
+                        mu_upper.tobytes() if mu_upper is not None else None,
+                        mu_lower.tobytes() if mu_lower is not None else None,
                         tau,
-                        alpha,
                         inputs_text,
                         outputs_text,
                         residuals_text,

@@ -365,7 +365,6 @@ class ArmijoGoldsteinLS(LinesearchSolver):
                     else:
                         raise err
 
-            # self._mpi_print(self._iter_count, norm, norm / norm0)
             self._mpi_print(self._iter_count, phi, self.alpha)
 
 

@@ -264,20 +264,26 @@ class LinearBLSQ(LinearSolver):
             Set of names of relevant systems based on the current linear solve.
         """
         self._rel_systems = rel_systems
-        self._mode = mode
 
         system = self._system()
 
         u = system._outputs.asarray()
 
-        d_outputs = system._vectors["output"]["linear"].asarray()
-        d_resids = system._vectors["residual"]["linear"].asarray()
+        d_outputs = system._vectors["output"]["linear"]
+        d_resids = system._vectors["residual"]["linear"]
+
+        x_vec = d_outputs.asarray()
+        b_vec = d_resids.asarray()
 
         if self._assembled_jac is not None:
             mtx = self._assembled_jac._int_mtx._matrix
+        else:
+            mtx = self._build_mtx()
 
         # run custom solver
         with system._unscaled_context(outputs=[d_outputs], residuals=[d_resids]):
-            opt_result = lsq_linear(mtx, d_resids, bounds=(self.lower_bounds - u, self.upper_bounds - u), verbose=2)
-            d_outputs[:] = opt_result["x"]
+            opt_result = lsq_linear(
+                mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=2
+            )
+            x_vec[:] = opt_result["x"]
 

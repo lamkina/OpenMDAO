@@ -45,6 +45,7 @@ from openmdao.solvers.linear.scipy_iter_solver import ScipyKrylov
 from openmdao.solvers.linear.user_defined import LinearUserDefined
 from openmdao.solvers.linesearch.backtracking import ArmijoGoldsteinLS
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
+from openmdao.solvers.linesearch.bracketing import BracketingLS
 from openmdao.solvers.nonlinear.broyden import BroydenSolver
 from openmdao.solvers.nonlinear.nonlinear_block_gs import NonlinearBlockGS
 from openmdao.solvers.nonlinear.nonlinear_block_jac import NonlinearBlockJac

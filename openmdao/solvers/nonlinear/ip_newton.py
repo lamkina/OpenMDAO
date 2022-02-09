@@ -11,6 +11,8 @@ from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
 from openmdao.utils.om_warnings import issue_warning, SolverWarning
 from openmdao.solvers.linear.linear_blsq import LinearBLSQ
+from openmdao.solvers.linesearch.bracketing import BracketingLS
+from openmdao.solvers.linesearch.inner_product import InnerProductLS
 
 
 class IPNewtonSolver(NonlinearSolver):
@@ -179,7 +181,14 @@ class IPNewtonSolver(NonlinearSolver):
                 self.linear_solver.lower_bounds = self._lower_bounds
                 self.linear_solver.upper_bounds = self._upper_bounds
 
-            # TODO: Do isinstance check for linesearch
+            # Bounds and bound masks are in the line search base class,
+            # so they can be set universally as long as the linesearch
+            # solver is not None
+            if self.linesearch is not None:
+                self.linesearch._lower_bounds = self._lower_bounds
+                self.linesearch._upper_bounds = self._upper_bounds
+                self.linesearch._lower_finite_mask = self._lower_finite_mask
+                self.linesearch._upper_finite_mask = self._upper_finite_mask
 
     def _setup_solvers(self, system, depth):
         """
@@ -300,7 +309,7 @@ class IPNewtonSolver(NonlinearSolver):
         self._mu_upper = np.full(np.count_nonzero(self._upper_finite_mask), self.options["mu"])
 
         # Set the penalty in the line search if the unsteady formulation is being used.
-        if self.linesearch.options["penalty_residual"]:
+        if isinstance(self.linesearch, BracketingLS) or isinstance(self.linesearch, InnerProductLS):
             self.linesearch.mu_upper = self._mu_upper
             self.linesearch.mu_lower = self._mu_lower
 
@@ -455,7 +464,7 @@ class IPNewtonSolver(NonlinearSolver):
                 self._update_penalty()
                 # Only set the penalty in the line search for the unsteady formulation.
                 # Otherwise, the penalty isn't used in the line search.
-                if self.linesearch.options["penalty_residual"]:
+                if isinstance(self.linesearch, BracketingLS) or isinstance(self.linesearch, InnerProductLS):
                     self.linesearch.mu_lower = self._mu_lower
                     self.linesearch.mu_upper = self._mu_upper
 

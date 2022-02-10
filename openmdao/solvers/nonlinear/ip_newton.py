@@ -435,7 +435,6 @@ class IPNewtonSolver(NonlinearSolver):
         pt_mtx = np.diag(1 / np.full(size_u, self._tau))
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
-            mtx = mtx.toarray()
             mtx += pt_mtx
             jac._int_mtx._matrix = csc_matrix(mtx)
 
@@ -469,7 +468,7 @@ class IPNewtonSolver(NonlinearSolver):
                     self.linesearch.mu_upper = self._mu_upper
 
             if self.options["pseudo_transient"]:
-                self._tau *= self.options["gamma"]
+                self._tau *= self.options["gamma"] * self.linesearch.alpha
 
         # Disable local fd
         approx_status = system._owns_approx_jac

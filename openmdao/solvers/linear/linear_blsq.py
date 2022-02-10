@@ -2,7 +2,9 @@
 
 import warnings
 
+import scipy
 from scipy.sparse import csc_matrix
+from scipy.sparse import csr_matrix
 from scipy.optimize import lsq_linear
 import numpy as np
 
@@ -188,13 +190,11 @@ class LinearBLSQ(LinearSolver):
 
     SOLVER = "LN: BLSQ"
 
-    def __init__(self, solve_function=None, **kwargs):
+    def __init__(self, **kwargs):
         """
         Initialize all attributes.
         """
         super().__init__(**kwargs)
-
-        self.solve_function = solve_function
         self.lower_bounds = None
         self.upper_bounds = None
 
@@ -275,15 +275,20 @@ class LinearBLSQ(LinearSolver):
         x_vec = d_outputs.asarray()
         b_vec = d_resids.asarray()
 
+        # AssembledJacobians are unscaled
         if self._assembled_jac is not None:
             mtx = self._assembled_jac._int_mtx._matrix
+
+            # run solver
+            with system._unscaled_context(outputs=[d_outputs], residuals=[d_resids]):
+                opt_result = lsq_linear(
+                    mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=2
+                )
+                x_vec[:] = opt_result["x"]
+        # matrix-vector-product generated jacobians are scaled
         else:
             mtx = self._build_mtx()
-
-        # run custom solver
-        with system._unscaled_context(outputs=[d_outputs], residuals=[d_resids]):
             opt_result = lsq_linear(
                 mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=2
             )
             x_vec[:] = opt_result["x"]
-

@@ -824,10 +824,13 @@ class LinesearchSolver(NonlinearSolver):
         super().__init__(**kwargs)
         # Parent solver sets this to control whether to solve subsystems.
         self._do_subsolve = False
+        self._do_bounds_enforce = True
         self._lower_bounds = None
         self._upper_bounds = None
         self._lower_finite_mask = None
         self._upper_finite_mask = None
+        self._mu_upper = None
+        self._mu_lower = None
 
     def _declare_options(self):
         """
@@ -851,60 +854,6 @@ class LinesearchSolver(NonlinearSolver):
             default=False,
             desc="Set to True to print out names and values of variables that are pulled " "back to their bounds.",
         )
-
-    def _setup_solvers(self, system, depth):
-        """
-        Assign system instance, set depth, and optionally perform setup.
-
-        Parameters
-        ----------
-        system : System
-            pointer to the owning system.
-        depth : int
-            depth of the current system (already incremented).
-        """
-        super()._setup_solvers(system, depth)
-        if system._has_bounds:
-            abs2meta_out = system._var_abs2meta["output"]
-            start = end = 0
-            for abs_name, val in system._outputs._abs_item_iter():
-                end += val.size
-                meta = abs2meta_out[abs_name]
-                var_lower = meta["lower"]
-                var_upper = meta["upper"]
-
-                if var_lower is None and var_upper is None:
-                    start = end
-                    continue
-
-                ref0 = meta["ref0"]
-                ref = meta["ref"]
-
-                if not np.isscalar(ref0):
-                    ref0 = ref0.ravel()
-                if not np.isscalar(ref):
-                    ref = ref.ravel()
-
-                if var_lower is not None:
-                    if self._lower_bounds is None:
-                        self._lower_bounds = np.full(len(system._outputs), -np.inf)
-                    if not np.isscalar(var_lower):
-                        var_lower = var_lower.ravel()
-                    self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
-
-                if var_upper is not None:
-                    if self._upper_bounds is None:
-                        self._upper_bounds = np.full(len(system._outputs), np.inf)
-                    if not np.isscalar(var_upper):
-                        var_upper = var_upper.ravel()
-                    self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
-
-                start = end
-        else:
-            self._lower_bounds = self._upper_bounds = None
-
-        self._lower_finite_mask = np.isfinite(self._lower_bounds)
-        self._upper_finite_mask = np.isfinite(self._upper_bounds)
 
 
 class LinearSolver(Solver):

@@ -56,6 +56,38 @@ class BoundsEnforceLS(LinesearchSolver):
 
     SOLVER = "LS: BCHK"
 
+    def _enforce_bounds(self, step, alpha):
+        """
+        Enforce lower/upper bounds.
+
+        Modifies the vector of outputs and the step.
+
+        Parameters
+        ----------
+        step : <Vector>
+            Newton step; the backtracking is applied to this vector in-place.
+        alpha : float
+            Step size parameter.
+        """
+        system = self._system()
+        if not system._has_bounds:
+            return
+
+        options = self.options
+        method = options["bound_enforcement"]
+        lower = self._lower_bounds
+        upper = self._upper_bounds
+
+        if options["print_bound_enforce"]:
+            _print_violations(system._outputs, lower, upper)
+
+        if method == "vector":
+            _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
+        elif method == "scalar":
+            _enforce_bounds_scalar(system._outputs, step, alpha, lower, upper)
+        elif method == "wall":
+            _enforce_bounds_wall(system._outputs, step, alpha, lower, upper)
+
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
@@ -91,7 +123,17 @@ class BoundsEnforceLS(LinesearchSolver):
         u += du
 
         with Recording("BoundsEnforceLS", self._iter_count, self) as rec:
-            self._enforce_bounds(step=du, alpha=1.0)
+            # If this flag is set, the line search will enforce bounds
+            # internally.  If this flag is not set, then the parent
+            # Newton solver is using the bounded least squares linear
+            # solver to handle bounds, so a step of alpha = 1 will
+            # take the solver directly to the bounds.
+            if self._do_bounds_enforce:
+                self._enforce_bounds(step=du, alpha=1.0)
+            else:
+                # TODO: Probably should say something more informative here
+                msg = "BoundsEnforceLS is useless with a LinearBLSQ solver.\n"
+                issue_warning(msg, category=SolverWarning)
 
             self._run_apply()
             norm = self._iter_get_norm()
@@ -137,6 +179,31 @@ class ArmijoGoldsteinLS(LinesearchSolver):
         float
             Line search objective (residual norm).
         """
+        # Compute the penalized residual norm
+        if self._lower_finite_mask is not None and self._upper_finite_mask is not None:
+            if self.mu_lower is not None and self.mu_upper is not None:
+                system = self._system()
+                u = system._outputs.asarray()
+                resids = system._residuals.asarray()
+                lb = self._lower_bounds
+                ub = self._upper_bounds
+                lb_mask = self._lower_finite_mask
+                ub_mask = self._upper_finite_mask
+
+                penalty = np.zeros(u.size)
+
+                t_lower = u[lb_mask] - lb[lb_mask]
+                t_upper = ub[ub_mask] - u[ub_mask]
+
+                if t_lower.size > 0:
+                    penalty[lb_mask] += np.sum(self.mu_lower * -np.log(t_lower + 1e-10))
+
+                if t_upper.size > 0:
+                    penalty[ub_mask] += np.sum(self.mu_upper * -np.log(t_upper + 1e-10))
+
+                return np.linalg.norm(resids + penalty)
+
+        # Compute the unpenalized residual norm
         return self._iter_get_norm()
 
     def _enforce_bounds(self, step, alpha):
@@ -183,7 +250,7 @@ class ArmijoGoldsteinLS(LinesearchSolver):
             error at the first iteration.
         """
         system = self._system()
-        self.alpha = alpha = self.options["alpha"]
+        self.alpha = alpha = 1.0
 
         u = system._outputs
         du = system._vectors["output"]["linear"]
@@ -200,7 +267,8 @@ class ArmijoGoldsteinLS(LinesearchSolver):
         # Initial step length based on the input step length parameter
         u.add_scal_vec(alpha, du)
 
-        self._enforce_bounds(step=du, alpha=alpha)
+        if self._do_bounds_enforce:
+            self._enforce_bounds(step=du, alpha=alpha)
 
         try:
             cache = self._solver_info.save_cache()
@@ -226,7 +294,6 @@ class ArmijoGoldsteinLS(LinesearchSolver):
         """
         super()._declare_options()
         opt = self.options
-        opt["maxiter"] = 5
         opt.declare(
             "c",
             default=0.1,
@@ -237,7 +304,6 @@ class ArmijoGoldsteinLS(LinesearchSolver):
             "terminate the line search.",
         )
         opt.declare("rho", default=0.5, lower=0.0, upper=1.0, desc="Contraction factor.")
-        opt.declare("alpha", default=1.0, lower=0.0, desc="Initial line search step.")
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
         opt.declare(
             "method", default="Armijo", values=["Armijo", "Goldstein"], desc="Method to calculate stopping condition."

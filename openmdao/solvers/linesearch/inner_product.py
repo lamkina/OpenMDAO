@@ -5,41 +5,12 @@ between the residual and the Newton step vector.
 InnerProductLS -- Enforces bounds using the vector method.
 """
 
-import warnings
-
 import numpy as np
 
 from openmdao.core.analysis_error import AnalysisError
 from openmdao.solvers.solver import LinesearchSolver
-from openmdao.recorders.recording_iteration_stack import Recording
-from openmdao.utils.om_warnings import issue_warning, SolverWarning
 
-
-def _print_violations(outputs, lower, upper):
-    """
-    Print out which variables exceed their bounds.
-
-    Parameters
-    ----------
-    outputs : <Vector>
-        Vector containing the outputs.
-    lower : <Vector>
-        Vector containing the lower bounds.
-    upper : <Vector>
-        Vector containing the upper bounds.
-    """
-    start = end = 0
-    for name, val in outputs._abs_item_iter():
-        end += val.size
-        if upper is not None and any(val > upper[start:end]):
-            msg = f"'{name}' exceeds upper bounds\n  Val: {val}\n  Upper: {upper[start:end]}\n"
-            issue_warning(msg, category=SolverWarning)
-
-        if lower is not None and any(val < lower[start:end]):
-            msg = f"'{name}' exceeds lower bounds\n  Val: {val}\n  Lower: {lower[start:end]}\n"
-            issue_warning(msg, category=SolverWarning)
-
-        start = end
+# from openmdao.recorders.recording_iteration_stack import Recording
 
 
 class InnerProductLS(LinesearchSolver):
@@ -64,8 +35,6 @@ class InnerProductLS(LinesearchSolver):
         super().__init__(**kwargs)
 
         self._analysis_error_raised = False
-        self.mu_upper = None
-        self.mu_lower = None
 
     def _declare_options(self):
         """
@@ -73,12 +42,6 @@ class InnerProductLS(LinesearchSolver):
         """
         super()._declare_options()
         opt = self.options
-        self.options.declare(
-            "penalty_residual",
-            default=False,
-            types=bool,
-            desc="Whether or not to use the penalty terms in the line search residual.",
-        )
         opt.declare(
             "beta",
             default=2.0,
@@ -116,34 +79,6 @@ class InnerProductLS(LinesearchSolver):
         # attempting to set them will get KeyErrors.
         for unused_option in ("rtol", "atol", "err_on_non_converge"):
             opt.undeclare(unused_option)
-
-    def _enforce_bounds(self, step, alpha):
-        """
-        Enforce lower/upper bounds.
-        Modifies the vector of outputs and the step.
-        Parameters
-        ----------
-        step : <Vector>
-            Newton step; the backtracking is applied to this vector in-place.
-        alpha : float
-            Step size parameter.
-        """
-        system = self._system()
-        if not system._has_bounds:
-            return
-
-        options = self.options
-        method = options["bound_enforcement"]
-        lower = self._lower_bounds
-        upper = self._upper_bounds
-
-        if options["print_bound_enforce"]:
-            _print_violations(system._outputs, lower, upper)
-
-        if method == "vector":
-            _enforce_bounds_vector(system._outputs, step, alpha, lower, upper)
-        elif method == "scalar":
-            _enforce_bounds_scalar(system._outputs, step, alpha, lower, upper)
 
     def _evaluate_residuals(self):
         """
@@ -189,29 +124,81 @@ class InnerProductLS(LinesearchSolver):
         """
 
         self.SOLVER = "LS: IP INIT"
+        self.bracket = {
+            "alpha": {"lower": 0.0, "upper": self.options["alpha"]},
+            "phi": {"lower": 0.0, "upper": 0.0},
+        }
+        self.alpha_max = self.options["alpha_max"]
         system = self._system()
-        s_b = 0.0  # Lower bracket step length
-        s_a = self.alpha = self.options["alpha"]  # Upper brackt step length
+        buffer = 1e-13
 
         u = system._outputs
         du = system._vectors["output"]["linear"]
 
+        ub = self._upper_bounds
+        lb = self._lower_bounds
+
+        is_bracketed = False
+
         self._run_apply()
 
         # Store the initial residual norm for recording
-        self.g_0, self._phi0 = self._linesearch_objective()
+        self.bracket["phi"]["lower"], self._norm0 = self._linesearch_objective()
+        self._phi0 = self.bracket["phi"]["lower"]
 
-        # Move the states to the upper bracket point
-        u.add_scal_vec(s_a, du)
+        # --- Limit alpha max to satisfy bounds ---
+        # Limit alpha max to find the value that will prevent the line search
+        # from exceeding bounds and from exceeding the specified alpha max
+        d_alpha = 0  # required change in step size, relative to the du vector
+        u.add_scal_vec(self.options["alpha_max"], du)
+        self.alpha = self.options["alpha_max"]
 
-        # Enforce bounds at the upper bracket step length
-        self._enforce_bounds(step=du, alpha=s_a)
+        # Find the largest amount a bound is violated
+        # Where positive d_alpha means a bound is violated
+        mask = du.asarray() != 0
+        if mask.any():
+            abs_du_mask = np.abs(du.asarray()[mask] * self.options["alpha_max"])
+            u_mask = u.asarray()[mask]
+
+            # Check for states violating the lower bound
+            if lb is not None:
+                max_d_alpha = np.amax((lb[mask] - u_mask) / abs_du_mask)
+                if max_d_alpha > d_alpha:
+                    d_alpha = max_d_alpha
+
+            # Check for states violating the upper bound
+            if ub is not None:
+                max_d_alpha = np.amax((u_mask - ub[mask]) / abs_du_mask)
+                if max_d_alpha > d_alpha:
+                    d_alpha = max_d_alpha
+
+        # Adjust alpha_max so that it goes right to the most restrictive bound,
+        # but pull it away from the obund by the buffer amount so the penalty
+        # doesn't return NaN.
+        if d_alpha > 0:
+            self.alpha_max *= 1 - d_alpha
+            self.alpha_max -= buffer / np.linalg.norm(du.asarray())
+
+        if self.bracket["alpha"]["upper"] < self.alpha_max:
+            # If the upper bracket is less than the computed alpha max, move the
+            # states to the upper bracket.
+            u.add_scal_vec(self.bracket["alpha"]["upper"] - self.alpha, du)
+            self.alpha = self.bracket["alpha"]["upper"]
+        else:
+            # Else, move the states to the computed alpha max and set
+            # the upper bracket equal to alpha max.  If this condition is met,
+            # then we set the is_bracketed flag to true because we can no
+            # longer search further along this direction.
+            u.add_scal_vec(self.alpha_max - self.alpha)
+            self.bracket["alpha"]["upper"] = self.alpha_max
+            self.alpha = self.bracket["alpha"]["upper"]
+            is_bracketed = True
 
         try:
             cache = self._solver_info.save_cache()
 
             self._run_apply()
-            g_a, phi = self._linesearch_objective()
+            phi, norm = self._linesearch_objective()
             self._iter_count += 1
 
         except AnalysisError as err:
@@ -222,15 +209,13 @@ class InnerProductLS(LinesearchSolver):
             else:
                 raise err
 
-            phi = np.nan
+            norm = np.nan
 
-        # Set initial brackets
-        self.s_ab = [s_b, s_a]
-        self.g_ab = [self.g_0, g_a]
+        self.bracket["phi"]["upper"] = phi
 
-        self._mpi_print(self._iter_count, phi, s_a)
+        self._mpi_print(self._iter_count, norm, self.alpha)
 
-        return phi
+        return norm, is_bracketed
 
     def _linesearch_objective(self):
         """
@@ -252,30 +237,31 @@ class InnerProductLS(LinesearchSolver):
         system = self._system()
         u = system._outputs.asarray()
         du = system._vectors["output"]["linear"].asarray()
-        residuals = system._residuals.asarray()
+        residuals = system._residuals.asarray().copy()
 
-        if self.options["penalty_residual"]:
-            lb = self._lower_bounds
-            ub = self._upper_bounds
-            lb_mask = self._lower_finite_mask
-            ub_mask = self._upper_finite_mask
+        if self._lower_finite_mask is not None and self._upper_finite_mask is not None:
+            if self.mu_lower is not None and self.mu_upper is not None:
+                lb = self._lower_bounds
+                ub = self._upper_bounds
+                lb_mask = self._lower_finite_mask
+                ub_mask = self._upper_finite_mask
 
-            penalty = np.zeros(u.size)
+                penalty = np.zeros(u.size)
 
-            t_lower = u[lb_mask] - lb[lb_mask]
-            t_upper = ub[ub_mask] - u[ub_mask]
+                t_lower = u[lb_mask] - lb[lb_mask]
+                t_upper = ub[ub_mask] - u[ub_mask]
 
-            if t_lower.size > 0:
-                penalty[lb_mask] += np.sum(self.mu_lower * -np.log(t_lower + 1e-10))
+                if t_lower.size > 0:
+                    penalty[lb_mask] += np.sum(self.mu_lower * -np.log(t_lower + 1e-10))
 
-            if t_upper.size > 0:
-                penalty[ub_mask] += np.sum(self.mu_upper * -np.log(t_upper + 1e-10))
+                if t_upper.size > 0:
+                    penalty[ub_mask] += np.sum(self.mu_upper * -np.log(t_upper + 1e-10))
 
-            residuals += penalty
+                residuals += penalty
 
         return np.dot(du, residuals), np.linalg.norm(residuals)
 
-    def _bracketing(self, phi, rec):
+    def _bracketing(self):
         """Bracketing phase of the linesearch
         Parameters
         ----------
@@ -290,81 +276,47 @@ class InnerProductLS(LinesearchSolver):
         """
         self.SOLVER = "LS: IP BRKT"
         system = self._system()
-        options = self.options
-        alpha_max = options["alpha_max"]
-        beta = options["beta"]
-        maxiter = options["maxiter"]
+        beta = self.options["beta"]
+        maxiter = self.options["maxiter"]
 
         u = system._outputs
         du = system._vectors["output"]["linear"]
 
-        # First, we need to make sure alpha_max doesn't violate a bound.
-        # If alpha_max violates a bound, we need to set it to a value that will cut
-        # off right at the bound.
-        du_arr = du.asarray()
-        u_arr = u.asarray()
-        u_max = u_arr + alpha_max * du_arr
-
-        # This is the required change in step size, relative to the du vector.
-        d_alpha = 0
-
-        # Find the largest amount a bound is violated
-        # where positive means a bound is violated - i.e. the required d_alpha.
-        du_arr = du.asarray()
-        mask = du_arr != 0
-        if mask.any():
-            abs_du_mask = np.abs(du_arr[mask])
-            u_mask = u_max[mask]
-
-            # Check lower bound
-            if self._lower_bounds is not None:
-                max_d_alpha = np.amax((self._lower_bounds[mask] - u_mask) / abs_du_mask)
-                if max_d_alpha > d_alpha:
-                    d_alpha = max_d_alpha
-
-            # Check upper bound
-            if self._upper_bounds is not None:
-                max_d_alpha = np.amax((u_mask - self._upper_bounds[mask]) / abs_du_mask)
-                if max_d_alpha > d_alpha:
-                    d_alpha = max_d_alpha
-
-        # Adjust alpha_max so that it goes right to the most restrictive
-        # bound.
-        if d_alpha > 0:
-            alpha_max = alpha_max - d_alpha
-
         while (
-            self.s_ab[1] * beta < alpha_max
+            self.bracket["alpha"]["upper"] * beta < self.alpha_max
             and self._iter_count < maxiter
-            and (np.sign(self.g_ab[1]) * np.sign(self.g_ab[0]) > 0 or self._analysis_error_raised)
+            and (
+                np.sign(self.bracket["phi"]["upper"]) * np.sign(self.bracket["phi"]["lower"]) > 0
+                or self._analysis_error_raised
+            )
         ):
 
             # Move the lower bracket step and value
-            self.s_ab[0], self.g_ab[0] = self.s_ab[1], self.g_ab[1]
+            self.bracket["alpha"]["lower"], self.bracket["phi"]["lower"] = (
+                self.bracket["alpha"]["upper"],
+                self.bracket["phi"]["upper"],
+            )
 
             # Update the upper bracket step
-            self.s_ab[1] *= beta
+            self.bracket["alpha"]["upper"] *= beta
 
             # Compute the relative step between the bracket endpoints
-            s_rel = self.s_ab[1] - self.alpha
-            self.alpha = self.s_ab[1]
-
             # Move the relative step between the new step and previous step
-            u.add_scal_vec(s_rel, du)
+            u.add_scal_vec(self.bracket["alpha"]["upper"] - self.alpha, du)
+            self.alpha = self.bracket["alpha"]["upper"]
 
             cache = self._solver_info.save_cache()
 
             try:
-
                 self._evaluate_residuals()
                 self._iter_count += 1
 
                 # Compute the new upper bracket value
-                self.g_ab[1], phi = self._linesearch_objective()
+                self.bracket["phi"]["upper"], norm = self._linesearch_objective()
 
-                rec.abs = phi
-                rec.rel = phi / self._phi0
-                rec.alpha = self.alpha
+                # rec.abs = norm
+                # rec.rel = norm / self._norm0
+                # rec.alpha = self.alpha
 
             except AnalysisError as err:
                 self._solver_info.restore_cache(cache)
@@ -372,15 +324,15 @@ class InnerProductLS(LinesearchSolver):
 
                 if self.options["retry_on_analysis_error"]:
                     self._analysis_error_raised = True
-                    rec.abs = np.nan
-                    rec.rel = np.nan
+                    # rec.abs = np.nan
+                    # rec.rel = np.nan
 
                 else:
                     raise err
 
-            self._mpi_print(self._iter_count, phi, self.alpha)
+            self._mpi_print(self._iter_count, norm, self.alpha)
 
-    def _inv_quad_interp(self, s_c, g_c):
+    def _inv_quad_interp(self, alpha_mid, phi_mid):
         """Calls the inverse quadratic interpolation helper function
         Parameters
         ----------
@@ -393,14 +345,24 @@ class InnerProductLS(LinesearchSolver):
         float
             Approximate root for the inner product
         """
-        return _inv_quad_interp(self.s_ab[1], self.g_ab[1], self.s_ab[0], self.g_ab[0], s_c, g_c)
+        alpha_upper = self.bracket["alpha"]["upper"]
+        alpha_lower = self.bracket["alpha"]["lower"]
+        phi_upper = self.bracket["phi"]["upper"]
+        phi_lower = self.bracket["phi"]["lower"]
+        return _inv_quad_interp(alpha_upper, phi_upper, alpha_lower, phi_lower, alpha_mid, phi_mid)
 
     def _swap_bracket(self):
-        """Swaps points 'a' and 'b' in the bracket"""
-        self.s_ab[1], self.s_ab[0] = self.s_ab[0], self.s_ab[1]
-        self.g_ab[1], self.g_ab[0] = self.g_ab[0], self.g_ab[1]
+        """Swaps upper and lower points in the bracket"""
+        self.bracket["alpha"]["upper"], self.bracket["alpha"]["lower"] = (
+            self.bracket["alpha"]["lower"],
+            self.bracket["alpha"]["upper"],
+        )
+        self.bracket["phi"]["upper"], self.bracket["phi"]["lower"] = (
+            self.bracket["phi"]["lower"],
+            self.bracket["phi"]["upper"],
+        )
 
-    def _brentq(self, rec):
+    def _brentq(self):
         """
         Brent's method for finding the root of a function.
 
@@ -419,64 +381,74 @@ class InnerProductLS(LinesearchSolver):
         du = system._vectors["output"]["linear"]
 
         # Swap a and b
-        if abs(self.g_ab[0]) < abs(self.g_ab[1]):
+        if abs(self.bracket["phi"]["lower"]) < abs(self.bracket["phi"]["upper"]):
             # State vector is always at point 'a' after bracketing.
             # If a swap occurs, we know it simply switches to point 'b'.
-            self.alpha = self.s_ab[0]
+            self.alpha = self.bracket["alpha"]["lower"]
             self._swap_bracket()
 
-        s_c, g_c = self.s_ab[1], self.g_ab[1]
-        s_d = 0.0  # Initialize this to zero, but will not be used on the first iteration
-        g_k = self.g_ab[0]
+        alpha_mid, phi_mid = self.bracket["alpha"]["upper"], self.bracket["phi"]["upper"]
+        alpha_temp = 0.0  # Initialize this to zero, but will not be used on the first iteration
+        phi_new = self.bracket["phi"]["lower"]
         flag = True
 
-        while self._iter_count < maxiter and self.g_ab[0] != 0.0 and g_k != 0.0:
-            if self.g_ab[1] != g_c and self.g_ab[0] != g_c:
+        while self._iter_count < maxiter and self.bracket["phi"]["lower"] != 0.0 and phi_new != 0.0:
+            if self.bracket["phi"]["upper"] != phi_mid and self.bracket["phi"]["lower"] != phi_mid:
                 # inverse quadratic interpolation
-                s_k = self._inv_quad_interp(s_c, g_c)
+                alpha_new = self._inv_quad_interp(alpha_mid, phi_mid)
             else:
-                s_k = self.s_ab[0] - self.g_ab[0] * ((self.s_ab[0] - self.s_ab[1]) / (self.g_ab[0] - self.g_ab[1]))
+                alpha_new = self.bracket["alpha"]["lower"] - self.bracket["phi"]["lower"] * (
+                    (self.bracket["alpha"]["lower"] - self.bracket["alpha"]["upper"])
+                    / (self.bracket["phi"]["lower"] - self.bracket["phi"]["upper"])
+                )
 
             if (
-                ((3 * self.s_ab[1] + self.s_ab[0]) / 4 < s_k < self.s_ab[0])
-                or (flag and abs(s_k - self.s_ab[0]) >= abs(self.s_ab[0] - s_c) / 2)
-                or (not flag and abs(s_k - self.s_ab[0]) >= abs(s_c - s_d) / 2)
-                or (flag and abs(self.s_ab[0] - s_c) < 1e-4)
-                or (not flag and abs(s_c - s_d) < 1e-4)
+                (
+                    (3 * self.bracket["alpha"]["upper"] + self.bracket["alpha"]["lower"]) / 4
+                    < alpha_new
+                    < self.bracket["alpha"]["lower"]
+                )
+                or (
+                    flag
+                    and abs(alpha_new - self.bracket["alpha"]["lower"])
+                    >= abs(self.bracket["alpha"]["lower"] - alpha_mid) / 2
+                )
+                or (not flag and abs(alpha_new - self.bracket["alpha"]["lower"]) >= abs(alpha_mid - alpha_temp) / 2)
+                or (flag and abs(self.bracket["alpha"]["lower"] - alpha_mid) < 1e-4)
+                or (not flag and abs(alpha_mid - alpha_temp) < 1e-4)
             ):
-                s_k = (self.s_ab[1] + self.s_ab[0]) / 2  # bisect method
+                alpha_new = (self.bracket["alpha"]["upper"] + self.bracket["alpha"]["lower"]) / 2  # bisect method
                 flag = True
 
             else:
                 flag = False
 
             # Evaluate the residuals
-            u.add_scal_vec(s_k - self.alpha, du)
-            self.alpha = s_k
+            u.add_scal_vec(alpha_new - self.alpha, du)
+            self.alpha = alpha_new
             self._evaluate_residuals()
-            g_k, phi = self._linesearch_objective()
+            phi_new, norm = self._linesearch_objective()
             self._iter_count += 1
 
-            phi = self._iter_get_norm()
-            rec.abs = phi
-            rec.rel = phi / self._phi0
-            rec.alpha = self.alpha
+            # rec.abs = norm
+            # rec.rel = norm / self._norm0
+            # rec.alpha = self.alpha
 
-            self._mpi_print(self._iter_count, phi, s_k)
+            self._mpi_print(self._iter_count, norm, self.alpha)
 
-            s_d = s_c
-            s_c, g_c = self.s_ab[0], self.g_ab[0]
+            alpha_temp = alpha_mid
+            alpha_mid, phi_mid = self.bracket["alpha"]["lower"], self.bracket["phi"]["lower"]
 
-            if np.sign(self.g_ab[1]) * np.sign(g_k) < 0:
-                self.s_ab[0], self.g_ab[0] = s_k, g_k
+            if np.sign(self.bracket["phi"]["upper"]) * np.sign(phi_new) < 0:
+                self.bracket["alpha"]["lower"], self.bracket["phi"]["lower"] = alpha_new, phi_new
             else:
-                self.s_ab[1], self.g_ab[1] = s_k, g_k
+                self.bracket["alpha"]["upper"], self.bracket["phi"]["upper"] = alpha_new, phi_new
 
             # swap a and b
-            if abs(self.g_ab[1]) < abs(self.g_ab[0]):
+            if abs(self.bracket["phi"]["upper"]) < abs(self.bracket["phi"]["lower"]):
                 self._swap_bracket()
 
-    def _illinois(self, rec):
+    def _illinois(self):
         """Illinois root finding algorithm that is a variation of the
         secant method.
 
@@ -495,37 +467,45 @@ class InnerProductLS(LinesearchSolver):
         du = system._vectors["output"]["linear"]
 
         # Initialize 'g' as the upper bracket step
-        g_k = self.g_ab[1]
+        phi_new = self.bracket["phi"]["upper"]
 
         while self._iter_count < maxiter and (
-            abs(g_k) > 0.5 * abs(self.g_0) or abs(self.s_ab[0] - self.s_ab[1]) > 0.25 * np.sum(self.s_ab)
+            abs(phi_new) > 0.5 * abs(self._phi0)
+            or abs(self.bracket["alpha"]["lower"] - self.bracket["alpha"]["upper"])
+            > 0.25 * (self.bracket["alpha"]["lower"] + self.bracket["alpha"]["upper"])
         ):
-            s_k = self.s_ab[1] - self.g_ab[1] * ((self.s_ab[1] - self.s_ab[0]) / (self.g_ab[1] - self.g_ab[0]))
+            alpha_new = self.bracket["alpha"]["upper"] - self.bracket["phi"]["upper"] * (
+                (self.bracket["alpha"]["upper"] - self.bracket["alpha"]["lower"])
+                / (self.bracket["phi"]["upper"] - self.bracket["phi"]["lower"])
+            )
 
             # Update the state vector using a relative step between
             # alpha and the upper bracket.
-            u.add_scal_vec(s_k - self.alpha, du)
-            self.alpha = s_k
+            u.add_scal_vec(alpha_new - self.alpha, du)
+            self.alpha = alpha_new
             self._evaluate_residuals()
-            g_k, phi = self._linesearch_objective()
+            phi_new, norm = self._linesearch_objective()
             self._iter_count += 1
 
-            rec.abs = phi
-            rec.rel = phi / self._phi0
-            rec.alpha = self.alpha
+            # rec.abs = norm
+            # rec.rel = norm / self._norm0
+            # rec.alpha = self.alpha
 
-            if np.sign(g_k) * np.sign(self.g_ab[1]) > 0:
-                self.g_ab[0] *= rho
+            if np.sign(phi_new) * np.sign(self.bracket["phi"]["upper"]) > 0:
+                self.bracket["phi"]["lower"] *= rho
 
             else:
-                self.s_ab[0], self.g_ab[0] = self.s_ab[1], self.g_ab[1]
+                self.bracket["alpha"]["lower"], self.bracket["phi"]["lower"] = (
+                    self.bracket["alpha"]["upper"],
+                    self.bracket["phi"]["upper"],
+                )
 
-            self.s_ab[1], self.g_ab[1] = s_k, g_k
+            self.bracket["alpha"]["upper"], self.bracket["phi"]["upper"] = alpha_new, phi_new
 
-            self._mpi_print(self._iter_count, phi, s_k)
+            self._mpi_print(self._iter_count, norm, self.alpha)
 
-    def _secant(self, rec):
-        self.SOLVER = "LS: IP SECANT"
+    def _secant(self):
+        self.SOLVER = "LS: SCNT"
         options = self.options
         maxiter = options["maxiter"]
 
@@ -534,27 +514,28 @@ class InnerProductLS(LinesearchSolver):
         du = system._vectors["output"]["linear"]
 
         while self._iter_count < maxiter:
-            s_k = self.s_ab[1] - self.g_ab[1] * ((self.s_ab[1] - self.s_ab[0]) / (self.g_ab[1] - self.g_ab[0]))
+            alpha_new = self.bracket["alpha"]["upper"] - self.bracket["phi"]["upper"] * (
+                (self.bracket["alpha"]["upper"] - self.bracket["alpha"]["lower"])
+                / (self.bracket["phi"]["upper"] - self.bracket["phi"]["lower"])
+            )
 
-            u.add_scal_vec(s_k - self.alpha, du)
-            self.alpha = s_k
+            u.add_scal_vec(alpha_new - self.alpha, du)
+            self.alpha = alpha_new
             self._evaluate_residuals()
-            g_k, phi = self._linesearch_objective()
+            phi_new, norm = self._linesearch_objective()
             self._iter_count += 1
 
-            rec.abs = phi
-            rec.rel = phi / self._phi0
-            rec.alpha = self.alpha
+            # rec.abs = norm
+            # rec.rel = norm / self._norm0
+            # rec.alpha = self.alpha
 
-            self._mpi_print(self._iter_count, phi, s_k)
+            self._mpi_print(self._iter_count, norm, self.alpha)
 
-            if np.sign(g_k) * np.sign(self.g_ab[1]) > 0:
-                self.s_ab[1], self.g_ab[1] = s_k, g_k
-                self.alpha = self.s_ab[1]
+            if np.sign(phi_new) * np.sign(self.bracket["phi"]["upper"]) > 0:
+                self.bracket["alpha"]["upper"], self.bracket["phi"]["upper"] = alpha_new, phi_new
 
             else:
-                self.s_ab[0], self.g_ab[0] = s_k, g_k
-                self.alpha = self.s_ab[0]
+                self.bracket["alpha"]["lower"], self.bracket["phi"]["lower"] = alpha_new, phi_new
 
     def _solve(self):
         """
@@ -564,24 +545,21 @@ class InnerProductLS(LinesearchSolver):
         options = self.options
         method = options["root_method"]
 
-        phi = self._iter_initialize()
+        norm, is_bracketed = self._iter_initialize()
+        if not is_bracketed:
+            self._bracketing()
 
-        # Find the interval that brackets the root.  Analysis errors
-        # are caught within the bracketing phase and bounds are enforced
-        # at the upper step of the bracket.  If the bracketing phase
-        # exits without error, we should be able to find a step length
-        # within the bracket which drives the inner product to zero.
-        with Recording("InnerProductLS", self._iter_count, self) as rec:
-            self._bracketing(phi, rec)
+        if self.bracket["phi"]["lower"] > self.bracket["phi"]["upper"]:
+            self._swap_bracket()
 
-            # Only rootfind/pinpoint if a bracket exists
-            if not np.sign(self.g_ab[1]) * np.sign(self.g_ab[0]) >= 0:
-                if method == "illinois":
-                    self._illinois(rec)
-                elif method == "brent":
-                    self._brentq(rec)
-                elif method == "secant":
-                    self._secant(rec)
+        # Only rootfind/pinpoint if a bracket exists
+        if not np.sign(self.bracket["phi"]["upper"]) * np.sign(self.bracket["phi"]["lower"]) >= 0:
+            if method == "illinois":
+                self._illinois()
+            elif method == "brent":
+                self._brentq()
+            elif method == "secant":
+                self._secant()
 
 
 def _inv_quad_interp(s_a, g_a, s_b, g_b, s_c, g_c):
@@ -610,106 +588,3 @@ def _inv_quad_interp(s_a, g_a, s_b, g_b, s_c, g_c):
     term_2 = (s_b * g_a * g_c) / ((g_b - g_a) * (g_b - g_c))
     term_3 = (s_c * g_a * g_b) / ((g_c - g_a) * (g_c - g_b))
     return term_1 + term_2 + term_3
-
-
-def _enforce_bounds_vector(u, du, alpha, lower_bounds, upper_bounds):
-    """
-    Enforce lower/upper bounds, backtracking the entire vector together.
-    This method modifies both self (u) and step (du) in-place.
-    Parameters
-    ----------
-    u :<Vector>
-        Output vector.
-    du : <Vector>
-        Newton step; the backtracking is applied to this vector in-place.
-    alpha : float
-        step size.
-    lower_bounds : ndarray
-        Lower bounds array.
-    upper_bounds : ndarray
-        Upper bounds array.
-    """
-    # The assumption is that alpha * du has been added to self (i.e., u)
-    # just prior to this method being called. We are currently in the
-    # initialization of a line search, and we're trying to ensure that
-    # the u does not violate bounds in the first iteration. If it does,
-    # we modify the du vector directly.
-
-    # This is the required change in step size, relative to the du vector.
-    d_alpha = 0
-
-    # Find the largest amount a bound is violated
-    # where positive means a bound is violated - i.e. the required d_alpha.
-    du_arr = du.asarray()
-    mask = du_arr != 0
-    if mask.any():
-        abs_du_mask = np.abs(du_arr[mask])
-        u_mask = u.asarray()[mask]
-
-        # Check lower bound
-        if lower_bounds is not None:
-            max_d_alpha = np.amax((lower_bounds[mask] - u_mask) / abs_du_mask)
-            if max_d_alpha > d_alpha:
-                d_alpha = max_d_alpha
-
-        # Check upper bound
-        if upper_bounds is not None:
-            max_d_alpha = np.amax((u_mask - upper_bounds[mask]) / abs_du_mask)
-            if max_d_alpha > d_alpha:
-                d_alpha = max_d_alpha
-
-    if d_alpha > 0:
-        # d_alpha will not be negative because it was initialized to be 0
-        # and we've only done max operations.
-        # d_alpha will not be greater than alpha because the assumption is that
-        # the original point was valid - i.e., no bounds were violated.
-        # Therefore 0 <= d_alpha <= alpha.
-
-        # We first update u to reflect the required change to du.
-        u.add_scal_vec(-d_alpha, du)
-
-        # At this point, we normalize d_alpha by alpha to figure out the relative
-        # amount that the du vector has to be reduced, then apply the reduction.
-        du *= 1 - d_alpha / alpha
-
-
-def _enforce_bounds_scalar(u, du, alpha, lower_bounds, upper_bounds):
-    """
-    Enforce lower/upper bounds on each scalar separately, then backtrack as a vector.
-    This method modifies both self (u) and step (du) in-place.
-    Parameters
-    ----------
-    u :<Vector>
-        Output vector.
-    du : <Vector>
-        Newton step; the backtracking is applied to this vector in-place.
-    alpha : float
-        step size.
-    lower_bounds : ndarray
-        Lower bounds array.
-    upper_bounds : ndarray
-        Upper bounds array.
-    """
-    # The assumption is that alpha * step has been added to this vector
-    # just prior to this method being called. We are currently in the
-    # initialization of a line search, and we're trying to ensure that
-    # the initial step does not violate bounds. If it does, we modify
-    # the step vector directly.
-
-    # enforce bounds on step in-place.
-    u_data = u.asarray()
-
-    # If u > lower, we're just adding zero. Otherwise, we're adding
-    # the step required to get up to the lower bound.
-    # For du, we normalize by alpha since du eventually gets
-    # multiplied by alpha.
-    change_lower = 0.0 if lower_bounds is None else np.maximum(u_data, lower_bounds) - u_data
-
-    # If u < upper, we're just adding zero. Otherwise, we're adding
-    # the step required to get down to the upper bound, but normalized
-    # by alpha since du eventually gets multiplied by alpha.
-    change_upper = 0.0 if upper_bounds is None else np.minimum(u_data, upper_bounds) - u_data
-
-    change = change_lower + change_upper
-    u_data += change
-    du += change / alpha

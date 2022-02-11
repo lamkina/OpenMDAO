@@ -41,8 +41,6 @@ class BracketingLS(LinesearchSolver):
         super().__init__(**kwargs)
 
         self._analysis_error_raised = False
-        self.mu_upper = None
-        self.mu_lower = None
 
     def _declare_options(self):
         """
@@ -57,7 +55,6 @@ class BracketingLS(LinesearchSolver):
             "alpha_max", default=10.0, lower=1.0, desc="Initial max line search step length for formward tracking"
         )
         self.options.declare("beta", default=2.0, lower=1.0, desc="Bracketing expansion/contraction factor")
-        self.options.declare("use_spi", default=True, desc="Use successive parabolic interpolation instead of Brent")
         self.options.declare(
             "spi_tol",
             default=1e-4,
@@ -186,7 +183,7 @@ class BracketingLS(LinesearchSolver):
         phi = self.bracket_high["phi"] = self._line_search_objective()
         self._iter_count += 1
 
-        self._mpi_print(self._iter_count, phi, phi / self._phi0)
+        self._mpi_print(self._iter_count, phi, self.alpha)
 
         # TODO: Record this iteration
 
@@ -257,7 +254,7 @@ class BracketingLS(LinesearchSolver):
         phi = self.bracket_high["phi"] = self._line_search_objective()
         self._iter_count += 1
 
-        self._mpi_print(self._iter_count, phi, phi / self._phi0)
+        self._mpi_print(self._iter_count, phi, self.alpha)
 
         # Keep forward tracking the bracket until a minimum has been bracketed
         while self.bracket_mid["phi"] > self.bracket_high["phi"] or self.bracket_mid["phi"] > self.bracket_low["phi"]:
@@ -286,156 +283,9 @@ class BracketingLS(LinesearchSolver):
             phi = self.bracket_high["phi"] = self._line_search_objective()
             self._iter_count += 1
 
-            self._mpi_print(self._iter_count, phi, phi / self._phi0)
+            self._mpi_print(self._iter_count, phi, self.alpha)
 
         return False
-
-    def _brent(self):
-        self.SOLVER = "LS: BRENT"
-        tol = 1e-2
-
-        system = self._system()
-        states = system._outputs
-        du = system._vectors["output"]["linear"]
-
-        # Set the golden ratio
-        maxiter = self.options["maxiter"]
-        c = (3 - 5 ** (1 / 2)) / 2
-        eps = np.finfo(float).eps
-        e = 0
-        d = 0
-
-        # Set the upper and lower bracket step sizes
-        a = min(self.bracket_low["alpha"], self.bracket_high["alpha"])
-        b = max(self.bracket_low["alpha"], self.bracket_high["alpha"])
-
-        # Set the midpoint step and objective value
-        if self.bracket_mid["alpha"] is None:
-            self.bracket_mid["alpha"] = x = a + c * (b - a)
-            states.add_scal_vec(x - self.alpha, du)
-            self.alpha = x
-            self._single_iteration()
-            phi = self.bracket_mid["phi"] = fx = self._line_search_objective()
-            self._iter_count += 1
-
-            self._mpi_print(self._iter_count, phi, phi / self._phi0)
-
-            # If we are not guaranteed a minimum within the bracket,
-            # just take the Newton step. As far as we can tell,
-            # using the combination of the penalized residual in the line search
-            # and the "unsteady" Newton linear system formulation does not guarantee
-            # that the line search will be searching in a downhill direction;
-            # d(phi)/d(alpha) at alpha = 0 is not necessarily negative
-            if (
-                self.bracket_mid["phi"] >= self.bracket_high["phi"]
-                or self.bracket_mid["phi"] >= self.bracket_low["phi"]
-            ):
-                states.add_scal_vec(self.bracket_high["alpha"] - self.alpha, du)
-                self.alpha = self.bracket_high["alpha"]
-                self._single_iteration()
-                phi = self._line_search_objective()
-                self._iter_count += 1
-
-                self._mpi_print(self._iter_count, phi, phi / self._phi0)
-
-                return
-
-        # Initialize v, w, x, fv, fw, and fx
-        # Set x and fx to the point with the lowest phi value (mid point)
-        x = copy(self.bracket_mid["alpha"])
-        fx = copy(self.bracket_mid["phi"])
-
-        # Set w and fw to the point with the next lowest phi and v and fv to the final one
-        if self.bracket_low["phi"] < self.bracket_high["phi"]:
-            w = copy(self.bracket_low["alpha"])
-            fw = copy(self.bracket_low["phi"])
-            v = copy(self.bracket_high["alpha"])
-            fv = copy(self.bracket_high["phi"])
-        else:
-            v = copy(self.bracket_low["alpha"])
-            fv = copy(self.bracket_low["phi"])
-            w = copy(self.bracket_high["alpha"])
-            fw = copy(self.bracket_high["phi"])
-
-        # Loop until reaching the maximum number of iterations
-        while self._iter_count < maxiter:
-            m = 0.5 * (b + a)  # Start with bisection
-            tol1 = tol + abs(x) * eps
-            tol2 = 2 * tol1
-
-            if abs(x - m) > tol2 - 0.5 * (b - a):
-                p = q = r = 0
-                if abs(e) > tol:
-                    # Fit parabola
-                    r = (x - w) * (fx - fv)
-                    q = (x - v) * (fx - fw)
-                    p = (x - v) * q - (x - w) * r
-                    q = 2 * (q - r)
-
-                    if q > 0:
-                        p = -p
-                    else:
-                        q = -q
-
-                    r = e
-                    e = d
-
-                if abs(p) < abs(0.5 * q * r) and p < q * (a - x) and p < q * (b - x):
-                    # Parabolic inerpolation step
-                    d = p / q
-                    u = x + d
-                    # f must not be evaluated too close to a or b
-                    if u - a < tol2 or b - u < tol2:
-                        d = tol if x < m else -tol
-
-                else:
-                    # Golden section step
-                    e = (b - x) if x < m else (a - x)
-                    d = c * e
-
-                # f must not be evaluated too close to x
-                if abs(d) >= tol:
-                    u = x + d
-                elif d > 0:
-                    u = x + tol
-                else:
-                    u = x - tol
-
-                # Move the states to u and evaluate f(u)
-                states.add_scal_vec(u - self.alpha, du)
-                self.alpha = u
-                self._single_iteration()
-                phi = fu = self._line_search_objective()
-                self._iter_count += 1
-
-                self._mpi_print(self._iter_count, phi, phi / self._phi0)
-
-                # Update a, b, v, w, and x
-                if fu <= fx:
-                    if u < x:
-                        b = x
-                    else:
-                        a = x
-
-                    v, fv = w, fw
-                    w, fw = x, fx
-                    x, fx = u, fu
-
-                else:
-                    if u < x:
-                        a = u
-                    else:
-                        b = u
-
-                    if fu <= fw or w == x:
-                        v, fv = w, fw
-                        w, fw = u, fu
-                    elif fu <= fv or v == x or v == w:
-                        v, fv = u, fu
-            else:
-                return
-
-        return
 
     def _spi(self):
         self.SOLVER = "LS: SPI"
@@ -454,7 +304,7 @@ class BracketingLS(LinesearchSolver):
             phi = self.bracket_mid["phi"] = self._line_search_objective()
             self._iter_count += 1
 
-            self._mpi_print(self._iter_count, phi, phi / self._phi0)
+            self._mpi_print(self._iter_count, phi, self.alpha)
 
             # If we are not guaranteed a minimum within the bracket,
             # just take the Newton step. As far as we can tell,
@@ -472,7 +322,7 @@ class BracketingLS(LinesearchSolver):
                 phi = self._line_search_objective()
                 self._iter_count += 1
 
-                self._mpi_print(self._iter_count, phi, phi / self._phi0)
+                self._mpi_print(self._iter_count, phi, self.alpha)
 
                 return
 
@@ -501,7 +351,7 @@ class BracketingLS(LinesearchSolver):
             phi = fx_min = self._line_search_objective()
             self._iter_count += 1
 
-            self._mpi_print(self._iter_count, phi, phi / self._phi0)
+            self._mpi_print(self._iter_count, phi, self.alpha)
 
             # Update the bracket based on the function value at x_min
             if x < x_min < y:
@@ -534,7 +384,7 @@ class BracketingLS(LinesearchSolver):
                 phi = self._line_search_objective()
                 self._iter_count += 1
 
-                self._mpi_print(self._iter_count, phi, phi / self._phi0)
+                self._mpi_print(self._iter_count, phi, self.alpha)
                 return
 
         return
@@ -557,8 +407,4 @@ class BracketingLS(LinesearchSolver):
             if self._fwd_bracketing():
                 return
 
-        if self.options["use_spi"]:
-            self._spi()
-
-        else:
-            self._brent()
+        self._spi()

@@ -282,7 +282,8 @@ class LinearBLSQ(LinearSolver):
             # run solver
             with system._unscaled_context(outputs=[d_outputs], residuals=[d_resids]):
                 opt_result = lsq_linear(
-                    mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=2
+                    mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u),
+                    method="trf", lsmr_max_iter=10, lsmr_tol=1e-14, verbose=2
                 )
                 x_vec[:] = opt_result["x"]
         # matrix-vector-product generated jacobians are scaled

@@ -73,7 +73,7 @@ class BracketingLS(LinesearchSolver):
 
         # Compute the penalized residual norm
         if self._lower_finite_mask is not None and self._upper_finite_mask is not None:
-            if self.mu_lower is not None and self.mu_upper is not None:
+            if self._mu_lower is not None and self._mu_upper is not None:
                 system = self._system()
                 u = system._outputs.asarray()
                 resids = system._residuals.asarray()
@@ -88,10 +88,10 @@ class BracketingLS(LinesearchSolver):
                 t_upper = ub[ub_mask] - u[ub_mask]
 
                 if t_lower.size > 0:
-                    penalty[lb_mask] += np.sum(self.mu_lower * -np.log(t_lower + 1e-10))
+                    penalty[lb_mask] += np.sum(self._mu_lower * -np.log(t_lower + 1e-10))
 
                 if t_upper.size > 0:
-                    penalty[ub_mask] += np.sum(self.mu_upper * -np.log(t_upper + 1e-10))
+                    penalty[ub_mask] += np.sum(self._mu_upper * -np.log(t_upper + 1e-10))
 
                 return np.linalg.norm(resids + penalty)
 

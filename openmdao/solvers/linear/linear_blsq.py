@@ -197,6 +197,7 @@ class LinearBLSQ(LinearSolver):
         super().__init__(**kwargs)
         self.lower_bounds = None
         self.upper_bounds = None
+        self.unbounded_step = None
 
     def _declare_options(self):
         """
@@ -283,9 +284,9 @@ class LinearBLSQ(LinearSolver):
             with system._unscaled_context(outputs=[d_outputs], residuals=[d_resids]):
                 opt_result = lsq_linear(
                     mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u),
-                    method="trf", lsmr_max_iter=10, lsmr_tol=1e-14, verbose=2
-                )
+                    method="trf", lsmr_max_iter=10, lsmr_tol=1e-14, verbose=2                )
                 x_vec[:] = opt_result["x"]
+                self.unbounded_step = opt_result["x_unbounded"]
         # matrix-vector-product generated jacobians are scaled
         else:
             mtx = self._build_mtx()

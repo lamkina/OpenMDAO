@@ -311,8 +311,9 @@ class IPNewtonSolver(NonlinearSolver):
 
         # Set the penalty in the line search if the unsteady formulation is being used.
         if self.linesearch is not None:
-            self.linesearch._mu_upper = self._mu_upper
-            self.linesearch._mu_lower = self._mu_lower
+            if self.options["interior_penalty"]:
+                self.linesearch._mu_upper = self._mu_upper
+                self.linesearch._mu_lower = self._mu_lower
 
         # Set the pseudo-time step
         self._tau = self.options["tau"]

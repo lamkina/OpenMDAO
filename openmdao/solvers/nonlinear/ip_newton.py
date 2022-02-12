@@ -3,6 +3,7 @@
 import os
 import numpy as np
 from scipy.sparse import csc_matrix
+from scipy.sparse import diags
 
 from openmdao.core.analysis_error import AnalysisError
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
@@ -309,9 +310,9 @@ class IPNewtonSolver(NonlinearSolver):
         self._mu_upper = np.full(np.count_nonzero(self._upper_finite_mask), self.options["mu"])
 
         # Set the penalty in the line search if the unsteady formulation is being used.
-        if isinstance(self.linesearch, BracketingLS) or isinstance(self.linesearch, InnerProductLS):
-            self.linesearch.mu_upper = self._mu_upper
-            self.linesearch.mu_lower = self._mu_lower
+        if self.linesearch is not None:
+            self.linesearch._mu_upper = self._mu_upper
+            self.linesearch._mu_lower = self._mu_lower
 
         # Set the pseudo-time step
         self._tau = self.options["tau"]
@@ -416,9 +417,8 @@ class IPNewtonSolver(NonlinearSolver):
             dp_du_arr[self._upper_finite_mask] -= self._mu_upper / (t_upper + 1e-10)
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
-            mtx = mtx.toarray()
-            mtx += np.diag(dp_du_arr)
-            jac._int_mtx._matrix = csc_matrix(mtx)
+            mtx += diags(dp_du_arr, 0, format="csc")
+            jac._int_mtx._matrix = mtx
 
         else:  # Not a sparse matrix
             mtx += np.diag(dp_du_arr)
@@ -432,14 +432,14 @@ class IPNewtonSolver(NonlinearSolver):
         size_u = len(system._outputs.asarray())
 
         mtx = jac._int_mtx._matrix
-        pt_mtx = np.diag(1 / np.full(size_u, self._tau))
+        pt_arry = 1 / np.full(size_u, self._tau)
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
-            mtx += pt_mtx
-            jac._int_mtx._matrix = csc_matrix(mtx)
+            mtx += diags(pt_arry, 0, format="csc")
+            jac._int_mtx._matrix = mtx
 
         else:  # Not a sparse matrix
-            mtx += pt_mtx
+            mtx += np.diag(pt_arry)
             jac._int_mtx._matrix = mtx
 
     def _update_pt_step(self):
@@ -463,9 +463,9 @@ class IPNewtonSolver(NonlinearSolver):
                 self._update_penalty()
                 # Only set the penalty in the line search for the unsteady formulation.
                 # Otherwise, the penalty isn't used in the line search.
-                if isinstance(self.linesearch, BracketingLS) or isinstance(self.linesearch, InnerProductLS):
-                    self.linesearch.mu_lower = self._mu_lower
-                    self.linesearch.mu_upper = self._mu_upper
+                if self.linesearch is not None:
+                    self.linesearch._mu_lower = self._mu_lower
+                    self.linesearch._mu_upper = self._mu_upper
 
             if self.options["pseudo_transient"]:
                 self._tau *= self.options["gamma"] * self.linesearch.alpha
@@ -496,8 +496,12 @@ class IPNewtonSolver(NonlinearSolver):
 
         # We need to cache the states and newton step for the adaptive
         # penalty algorithm.
-        self._state_cache = system._outputs.asarray().copy()
-        self._du_cache = system._vectors["output"]["linear"].asarray().copy()
+        if isinstance(self.linear_solver, LinearBLSQ):
+            self._state_cache = system._outputs.asarray().copy()
+            self._du_cache = self.linear_solver.unbounded_step
+        else:
+            self._state_cache = system._outputs.asarray().copy()
+            self._du_cache = system._vectors["output"]["linear"].asarray().copy()
 
         if self.linesearch:
             self.linesearch._do_subsolve = do_subsolve

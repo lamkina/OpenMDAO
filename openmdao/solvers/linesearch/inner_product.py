@@ -240,7 +240,7 @@ class InnerProductLS(LinesearchSolver):
         residuals = system._residuals.asarray().copy()
 
         if self._lower_finite_mask is not None and self._upper_finite_mask is not None:
-            if self.mu_lower is not None and self.mu_upper is not None:
+            if self._mu_lower is not None and self._mu_upper is not None:
                 lb = self._lower_bounds
                 ub = self._upper_bounds
                 lb_mask = self._lower_finite_mask
@@ -252,10 +252,10 @@ class InnerProductLS(LinesearchSolver):
                 t_upper = ub[ub_mask] - u[ub_mask]
 
                 if t_lower.size > 0:
-                    penalty[lb_mask] += np.sum(self.mu_lower * -np.log(t_lower + 1e-10))
+                    penalty[lb_mask] += np.sum(self._mu_lower * -np.log(t_lower + 1e-10))
 
                 if t_upper.size > 0:
-                    penalty[ub_mask] += np.sum(self.mu_upper * -np.log(t_upper + 1e-10))
+                    penalty[ub_mask] += np.sum(self._mu_upper * -np.log(t_upper + 1e-10))
 
                 residuals += penalty
 

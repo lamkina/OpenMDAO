@@ -161,7 +161,7 @@ class IPNewtonSolver(NonlinearSolver):
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
 
                 else:
-                    self._lower_bounds = np.full(len(system._outputs), np.inf)
+                    self._lower_bounds = np.full(len(system._outputs), -np.inf)
 
                 if var_upper is not None:
                     if self._upper_bounds is None:
@@ -174,22 +174,27 @@ class IPNewtonSolver(NonlinearSolver):
                     self._upper_bounds = np.full(len(system._outputs), np.inf)
 
                 start = end
+        
+        # Otherwise, set bounds to infinity
+        else:
+            self._lower_bounds = np.full(len(system._outputs), -np.inf)
+            self._upper_bounds = np.full(len(system._outputs), np.inf)
 
-            self._lower_finite_mask = np.isfinite(self._lower_bounds)
-            self._upper_finite_mask = np.isfinite(self._upper_bounds)
+        self._lower_finite_mask = np.isfinite(self._lower_bounds)
+        self._upper_finite_mask = np.isfinite(self._upper_bounds)
 
-            if isinstance(self.linear_solver, LinearBLSQ):
-                self.linear_solver.lower_bounds = self._lower_bounds
-                self.linear_solver.upper_bounds = self._upper_bounds
+        if isinstance(self.linear_solver, LinearBLSQ):
+            self.linear_solver.lower_bounds = self._lower_bounds
+            self.linear_solver.upper_bounds = self._upper_bounds
 
-            # Bounds and bound masks are in the line search base class,
-            # so they can be set universally as long as the linesearch
-            # solver is not None
-            if self.linesearch is not None:
-                self.linesearch._lower_bounds = self._lower_bounds
-                self.linesearch._upper_bounds = self._upper_bounds
-                self.linesearch._lower_finite_mask = self._lower_finite_mask
-                self.linesearch._upper_finite_mask = self._upper_finite_mask
+        # Bounds and bound masks are in the line search base class,
+        # so they can be set universally as long as the linesearch
+        # solver is not None
+        if self.linesearch is not None:
+            self.linesearch._lower_bounds = self._lower_bounds
+            self.linesearch._upper_bounds = self._upper_bounds
+            self.linesearch._lower_finite_mask = self._lower_finite_mask
+            self.linesearch._upper_finite_mask = self._upper_finite_mask
 
     def _setup_solvers(self, system, depth):
         """

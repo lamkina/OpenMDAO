@@ -57,7 +57,7 @@ class BracketingLS(LinesearchSolver):
         self.options.declare("beta", default=2.0, lower=1.0, desc="Bracketing expansion/contraction factor")
         self.options.declare(
             "spi_tol",
-            default=1e-4,
+            default=5e-2,
             desc="Relative difference in alpha between minimum of previous and current iteration",
         )
 

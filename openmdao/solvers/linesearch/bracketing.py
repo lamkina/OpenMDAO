@@ -1,6 +1,6 @@
 """
-This linesearch brackets a minimum and then uses a variation of
-Brent's algorithm (involving successive parabolic interpolations) to
+This linesearch brackets a minimum (either forward or backward)
+and then uses successive parabolic interpolation to
 home in on the minimum. It does not use gradients.
 """
 

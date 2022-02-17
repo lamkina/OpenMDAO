@@ -158,8 +158,11 @@ class BracketingLS(LinesearchSolver):
 
         # Adjust alpha_max so that it goes right to the most restrictive bound,
         # but pull it away from the obund by the buffer amount so the penalty
-        # doesn't return NaN.
-        if d_alpha > 0:
+        # doesn't return NaN and the bound is never actually hit. We want
+        # d_alpha >= 0 instead of strictly greater because then the buffer
+        # will be applied even in the case where alpha_max brings the
+        # line search exactly to the bound.
+        if d_alpha >= 0:
             self.alpha_max *= 1 - d_alpha
             self.alpha_max -= buffer / np.linalg.norm(du.asarray())
 
@@ -321,7 +324,7 @@ class BracketingLS(LinesearchSolver):
 
         # Set the midpoint step and objective value
         if self.bracket_mid["alpha"] is None:
-            self.bracket_mid["alpha"] = 0.5 * (self.bracket_low["alpha"] + self.bracket_high["alpha"])
+            self.bracket_mid["alpha"] = self.bracket_high["alpha"] / self.options["beta"]
             u.add_scal_vec(self.bracket_mid["alpha"] - self.alpha, du)
             self.alpha = self.bracket_mid["alpha"]
             self._single_iteration()
@@ -371,6 +374,11 @@ class BracketingLS(LinesearchSolver):
                 (y - x) * (fy - fz) - (y - z) * (fy - fx)
             )
 
+            # If the minimum hasn't moved (the residual is very likely parabolic),
+            # there's no point in reevaluating the objective function, so just break
+            if x_min == y:
+                break
+
             # Move the states to u and evaluate f(u)
             u.add_scal_vec(x_min - self.alpha, du)
             self.alpha = x_min
@@ -411,14 +419,7 @@ class BracketingLS(LinesearchSolver):
             # restore from the best point so far. This should never happen,
             # but this provides a safeguard to handle the case if it does.
             else:
-                self._solver_info.restore_cache(self._cache_best_point)
-                u.add_scal_vec(y - self.alpha, du)
-                self.alpha = y
-                phi = self._line_search_objective()
-                self._iter_count += 1
-
-                self._mpi_print(self._iter_count, phi, self.alpha)
-                return
+                break
 
             self._mpi_print(self._iter_count, phi, self.alpha)
 

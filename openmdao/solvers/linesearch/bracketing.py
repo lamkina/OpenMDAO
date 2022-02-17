@@ -420,14 +420,14 @@ class BracketingLS(LinesearchSolver):
                 self._mpi_print(self._iter_count, phi, self.alpha)
                 return
 
-            self._mpi_print(self._iter_count, self.bracket_mid["phi"], self.bracket_mid["alpha"])
+            self._mpi_print(self._iter_count, phi, self.alpha)
 
         # Take the best point
         self._solver_info.restore_cache(self._cache_best_point)
         u.add_scal_vec(y - self.alpha, du)
         self.alpha = y
         phi = self._line_search_objective()
-        self._iter_count += 1
+        self.SOLVER = "LS: SPI final"
         self._mpi_print(self._iter_count, self.bracket_mid["phi"], self.bracket_mid["alpha"])
 
         return

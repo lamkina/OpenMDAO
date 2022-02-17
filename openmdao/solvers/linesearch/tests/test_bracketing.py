@@ -11,7 +11,7 @@ from openmdao.utils.assert_utils import assert_near_equal, assert_warning
 from openmdao.utils.general_utils import printoptions
 
 
-def create_comp(res_func, shape, deriv_method='cs'):
+def create_comp(res_func, shape, lower=None, upper=None, deriv_method='cs'):
     """Create an OpenMDAO component from a residual function.
 
     Parameters
@@ -20,6 +20,12 @@ def create_comp(res_func, shape, deriv_method='cs'):
         Takes in ndarray u and returns residual vector r
     shape : tuple
         Shape of input ndarray u and residual vector of res_func
+    lower : optional
+        Lower bound, see OpenMDAO add_output docs for acceptable formats,
+        by default None
+    upper : optional
+        Upper bound, see OpenMDAO add_output docs for acceptable formats,
+        by default None
     deriv_method : str, optional
         Method with which to compute partial derivatives,
         by default complex step (for other options, see possible
@@ -33,7 +39,7 @@ def create_comp(res_func, shape, deriv_method='cs'):
     """
     class Comp(om.ImplicitComponent):
         def setup(self):
-            self.add_output('u', shape=shape)
+            self.add_output('u', shape=shape, lower=lower, upper=upper)
         def setup_partials(self):
             self.declare_partials(of=['*'], wrt=['*'], method=deriv_method)
         def apply_nonlinear(self, inputs, outputs, residuals):
@@ -41,7 +47,8 @@ def create_comp(res_func, shape, deriv_method='cs'):
 
     return Comp
 
-def create_problem(res_func, shape, deriv_method='cs', iprint=2, **ls_opts):
+def create_problem(res_func, shape, lower=None, upper=None,
+                   deriv_method='cs', iprint=2, **ls_opts):
     """Create OpenMDAO Problem to test the line search by using a top
        level Newton solver with maxiter of 1 and adding the BracketingLS.
 
@@ -51,6 +58,12 @@ def create_problem(res_func, shape, deriv_method='cs', iprint=2, **ls_opts):
         Takes in ndarray u and returns residual vector r
     shape : tuple
         Shape of input ndarray u and residual vector of res_func
+    lower : optional
+        Lower bound, see OpenMDAO add_output docs for acceptable formats,
+        by default None
+    upper : optional
+        Upper bound, see OpenMDAO add_output docs for acceptable formats,
+        by default None
     deriv_method : str, optional
         Method with which to compute partial derivatives,
         by default complex step (for other options, see possible
@@ -68,7 +81,8 @@ def create_problem(res_func, shape, deriv_method='cs', iprint=2, **ls_opts):
     """
     p = om.Problem()
     p.model.add_subsystem('comp',
-                          create_comp(res_func, shape, deriv_method=deriv_method)(),
+                          create_comp(res_func, shape, lower=lower, upper=upper,
+                                      deriv_method=deriv_method)(),
                           promotes=['*'])
     p.model.nonlinear_solver = om.NewtonSolver(maxiter=1, iprint=iprint, solve_subsystems=True)
     p.model.linear_solver = om.DirectSolver()
@@ -78,9 +92,12 @@ def create_problem(res_func, shape, deriv_method='cs', iprint=2, **ls_opts):
 
 
 class TestBracketingCubic(unittest.TestCase):
+    """
+    r = u^3 + u^2
+    """
     def setUp(self):
         self.p = create_problem(lambda x: x**3 + x**2, (1,),
-                                maxiter=20, spi_tol=1e-6)
+                                maxiter=100, spi_tol=1e-6)
     
     def test_backtracking_finds_min(self):
         """
@@ -110,7 +127,362 @@ class TestBracketingCubic(unittest.TestCase):
         p.set_val('u', val=-0.64)
         p.run_model()
         assert_near_equal(p.get_val('u'), 0., tolerance=1e-6)
+    
+    def test_backtracking_finds_min_cusp(self):
+        """
+        In this case, the Newton solver overshoots the minimum
+        by enough that the objective at the Newton step is greater
+        than where it starts off. This should send the line search
+        backward. Then it will use SPI to find a minimum (which
+        happens to have a C1 discontinuous L2 norm).
+        """
+        p = self.p
+        p.set_val('u', val=-0.82)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -1., tolerance=1e-6)
+    
+    def test_backtracking_finds_min_cusp_harder(self):
+        """
+        In this case, the Newton solver overshoots the minimum
+        by enough that the objective at the Newton step is greater
+        than where it starts off. This should send the line search
+        backward. When alpha is cut in half, the objective is still
+        greater than the initial one, so it needs to backtrack until
+        it finds a bracket. Then it can finally call SPI to converge
+        to the solution (which happens to have a C1 discontinuous L2 norm).
+        """
+        p = self.p
+        p.set_val('u', val=-0.72)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -1., tolerance=1e-6)
+    
+    def test_forwardtracking_easy(self):
+        """
+        Point it toward the C1 continuous minimum, but from a
+        point that's concave up. This means the Newton step
+        undershoots to solution and the line search will need
+        to forward track.
+        """
+        p = self.p
+        p.set_val('u', val=-0.34)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-6)
+    
+    def test_forwardtracking_cusp(self):
+        """
+        Point it toward the C1 discontinuous minimum. The
+        objective at the Newton step will be less than the one
+        at the initial point, but it's actually past the minimum.
+        Still the line search should forward track and eventually
+        converge to the minimum.
+        """
+        p = self.p
+        p.set_val('u', val=-0.84)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -1., tolerance=1e-6)
+    
+    def test_forwardtracking_further(self):
+        """
+        This case requires far more forward tracking iterations
+        than the other ones so far. Eventually, it will bracket
+        both minimums and converge to the one at 0.
+        """
+        p = self.p
+        p.set_val('u', val=3.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-5)
 
+class TestBracketingMonatonic(unittest.TestCase):
+    """
+    r = e^(-u)     and     r = e^u
+
+    This test case handles simple bounds testing and
+    hitting alpha max.
+    """
+    def test_forward(self):
+        """
+        The function decreases forever, so it should step
+        only to alpha max (100) and return that value.
+        Conveniently, the Newton step starting at u = 0
+        is to u = 1, so alpha = u for this case.
+        """
+        alpha_max = 10
+        p = create_problem(lambda x: np.exp(-x), (1,),
+                           maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), alpha_max, tolerance=1e-10)
+    
+    def test_forward_simple_upper_bound(self):
+        """
+        The function is bounded at an alpha > 1
+        but < alpha_max, so it should hit and stop.
+        """
+        alpha_max = 10
+        upper = alpha_max - 1
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return np.exp(-x)
+        p = create_problem(func, (1,),
+                           upper=upper, maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+
+        # Should never reach the bound, just be very close to it
+        assert_near_equal(p.get_val('u'), upper, tolerance=1e-10)
+        self.assertLess(p.get_val('u')[0], upper)
+    
+    def test_backward_simple_upper_bound(self):
+        """
+        The function is bounded at an alpha < 1,
+        so it should back up to the bound and stop.
+        """
+        alpha_max = 10
+        upper = 0.5
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return np.exp(-x)
+        p = create_problem(func, (1,),
+                           upper=upper, maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+
+        # Should never reach the bound, just be very close to it
+        assert_near_equal(p.get_val('u'), upper, tolerance=1e-10)
+        self.assertLess(p.get_val('u')[0], upper)
+    
+    def test_forward_simple_lower_bound(self):
+        """
+        The function is bounded at an alpha > 1
+        but < alpha_max, so it should hit and stop.
+        """
+        alpha_max = 10
+        lower = -alpha_max + 1
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return np.exp(x)
+        p = create_problem(func, (1,),
+                           lower=lower, maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+
+        # Should never reach the bound, just be very close to it
+        assert_near_equal(p.get_val('u'), lower, tolerance=1e-10)
+        self.assertGreater(p.get_val('u')[0], lower)
+    
+    def test_backward_simple_lower_bound(self):
+        """
+        The function is bounded at an alpha < 1,
+        so it should back up to the bound and stop.
+        """
+        alpha_max = 10
+        lower = -0.5
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return np.exp(x)
+        p = create_problem(func, (1,),
+                           lower=lower, maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+
+        # Should never reach the bound, just be very close to it
+        assert_near_equal(p.get_val('u'), lower, tolerance=1e-10)
+        self.assertGreater(p.get_val('u')[0], lower)
+    
+    def test_forward_alpha_max_is_upper(self):
+        """
+        Alpha max brings the line search exactly to the bound.
+        This checks that it still never hits the bound.
+        """
+        alpha_max = 10
+        upper = alpha_max
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return np.exp(-x)
+        p = create_problem(func, (1,),
+                           upper=upper, maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+
+        # Should never reach the bound, just be very close to it
+        assert_near_equal(p.get_val('u'), upper, tolerance=1e-10)
+        self.assertLess(p.get_val('u')[0], upper)
+    
+    def test_forward_alpha_max_is_lower(self):
+        """
+        Alpha max brings the line search exactly to the bound.
+        This checks that it still never hits the bound.
+        """
+        alpha_max = 10
+        lower = -alpha_max
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return np.exp(x)
+        p = create_problem(func, (1,),
+                           lower=lower, maxiter=100, spi_tol=1e-6,
+                           alpha_max=alpha_max, beta=2)
+        p.set_val('u', val=0.)
+        p.run_model()
+
+        # Should never reach the bound, just be very close to it
+        assert_near_equal(p.get_val('u'), lower, tolerance=1e-10)
+        self.assertGreater(p.get_val('u')[0], lower)
+
+class TestBracketingTrickyBounds(unittest.TestCase):
+    """
+    These tests verifies the accuracy of SPI and
+    also more complex cases where there is a bound
+    but still a minimum in the feasible region.
+    """
+    def test_forward(self):
+        """
+        Should find the solution on the first SPI iteration.
+        """
+        p = create_problem(lambda x: x**2, (1,),
+                           spi_tol=1e-6, beta=3)
+        p.set_val('u', val=-1.)
+        p.run_model()
+
+        # Should only take three iterations:
+        #   First evaluation at alpha = 1
+        #   Forward track to alpha = 1 * beta = 3
+        #   Build parabola and solve for minimum (SPI)
+        assert_near_equal(p.get_val('u'), 0.)
+        self.assertEqual(p.model.nonlinear_solver.linesearch._iter_count, 3)
+    
+    def test_forward_bracketing_upper_bound(self):
+        """
+        In this case, it forward tracks to the upper bound and the
+        objective at the bound is greater than at the initial point.
+        Thus, it brackets a minimum and should converge to it.
+        """
+        upper = 1.25
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return x**2
+        p = create_problem(func, (1,), upper=upper,
+                           maxiter=10, spi_tol=1e-6,
+                           alpha_max=10, beta=5)
+        p.set_val('u', val=-1.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0.)
+    
+    def test_forward_bracketing_lower_bound(self):
+        """
+        In this case, it forward tracks to the lower bound and the
+        objective at the bound is greater than at the initial point.
+        Thus, it brackets a minimum and should converge to it.
+        """
+        lower = -1.25
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return x**2
+        p = create_problem(func, (1,), lower=lower,
+                           maxiter=10, spi_tol=1e-6,
+                           alpha_max=10, beta=5)
+        p.set_val('u', val=1.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0.)
+
+    def test_forward_bracketingish_upper_bound(self):
+        """
+        In this case, it forward tracks to the upper bound and the
+        objective at the bound is less than at the initial point. BUT
+        it is greater than the point at alpha = 1, so it should
+        still bracket and find the minimum.
+        """
+        upper = 0.3
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return x**2
+        p = create_problem(func, (1,), upper=upper,
+                           maxiter=10, spi_tol=1e-6,
+                           alpha_max=10, beta=5)
+        p.set_val('u', val=-1.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0.)
+    
+    def test_forward_bracketingish_lower_bound(self):
+        """
+        In this case, it forward tracks to the lower bound and the
+        objective at the bound is less than at the initial point. BUT
+        it is greater than the point at alpha = 1, so it should
+        still bracket and find the minimum.
+        """
+        lower = 0.3
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return x**2
+        p = create_problem(func, (1,), lower=lower,
+                           maxiter=10, spi_tol=1e-6,
+                           alpha_max=10, beta=5)
+        p.set_val('u', val=1.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0.)
+
+    def test_backward_bracketing_upper_bound(self):
+        """
+        In this case, it hits the upper bound at alpha < 1. The objective
+        at the bound is greater than the initial point, so it brackets.
+        Thus, it should converge to the minimum.
+        """
+        upper = 0.5
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return x**3 + x**2
+        p = create_problem(func, (1,), upper=upper,
+                           maxiter=20, spi_tol=1e-6,
+                           alpha_max=10, beta=2)
+        p.set_val('u', val=-0.6)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0.)
+    
+    def test_backward_bracketing_lower_bound(self):
+        """
+        In this case, it hits the lower bound at alpha < 1. The objective
+        at the bound is greater than the initial point, so it brackets.
+        Thus, it should converge to the minimum.
+        """
+        lower = -0.5
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return (-x)**3 + x**2
+        p = create_problem(func, (1,), lower=lower,
+                           maxiter=20, spi_tol=1e-6,
+                           alpha_max=10, beta=2)
+        p.set_val('u', val=0.6)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0.)
+
+
+# TODO: figure out a way to test the penalty
+
+# TODO: test this logic thoroughly:
+"""
+It’s not guaranteed that we’re searching in a downhill direction, so there may not be a minimum between the Newton step and alpha = 0.
+There are three cases that happen when the objective at the Newton step is greater than at alpha = 0 and the mid point is evaluated:
+1. The mid point is greater than both the Newton step and initial point. In this case I’m thinking we still continue backtracking?
+2. The mid point is less than the Newton step but greater than the initial point. In this case I’m thinking we keep backtracking and repeat these steps.
+3. The mid point is less than both and it brackets. Enter SPI
+"""
 
 if __name__ == "__main__":
     unittest.main()

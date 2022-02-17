@@ -73,6 +73,8 @@ class BracketingLS(LinesearchSolver):
 
         # Compute the penalized residual norm
         if self._lower_finite_mask is not None and self._upper_finite_mask is not None:
+            # TODO: doesn't seem obvious to me that these are guaranteed to be initialized.
+            #       Should we check that the attributes exist before this if?  -EA
             if self._mu_lower is not None and self._mu_upper is not None:
                 system = self._system()
                 u = system._outputs.asarray()

@@ -344,9 +344,8 @@ class BracketingLS(LinesearchSolver):
                 u.add_scal_vec(self.bracket_high["alpha"] - self.alpha, du)
                 self.alpha = self.bracket_high["alpha"]
                 phi = self._line_search_objective()
-                self._iter_count += 1
 
-                self._mpi_print(self._iter_count, phi, self.alpha)
+                self._mpi_print(self._iter_count, self.bracket_high["phi"], self.alpha)
 
                 return
 

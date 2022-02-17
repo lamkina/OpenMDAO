@@ -1,15 +1,11 @@
 """ Test for the Bracketing Line Search"""
 
-import sys
-import os
 import unittest
 
 import numpy as np
 
 import openmdao.api as om
-from openmdao.utils.assert_utils import assert_near_equal, assert_warning
-from openmdao.utils.general_utils import printoptions
-
+from openmdao.utils.assert_utils import assert_near_equal
 
 def create_comp(res_func, shape, lower=None, upper=None, deriv_method='cs'):
     """Create an OpenMDAO component from a residual function.
@@ -483,6 +479,8 @@ There are three cases that happen when the objective at the Newton step is great
 2. The mid point is less than the Newton step but greater than the initial point. In this case I’m thinking we keep backtracking and repeat these steps.
 3. The mid point is less than both and it brackets. Enter SPI
 """
+
+# TODO: check error checking? For example, what happens if the line search starts in the infeasible region
 
 if __name__ == "__main__":
     unittest.main()

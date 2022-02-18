@@ -45,7 +45,7 @@ class IPNewtonSolver(BoundedNonlinearSolver):
         # Slot for linear solver
         self.linear_solver = None
 
-        # Slot for linesearch
+        # Slot for linesearch (default to BoundsEnforceLS)
         self.linesearch = BoundsEnforceLS()
 
         # Slots for d_alpha vectors
@@ -59,7 +59,7 @@ class IPNewtonSolver(BoundedNonlinearSolver):
         # Pseudo-Transient time step
         self._tau = None
 
-        # Cache variable to store states for the penalty update algorithm
+        # Cache variables to store states for the penalty update algorithm
         self._state_cache = None
         self._du_cache = None
 
@@ -398,7 +398,13 @@ class IPNewtonSolver(BoundedNonlinearSolver):
 
             if self.options["pseudo_transient"]:
                 if self.linesearch is not None:
-                    self._tau *= self.options["gamma"] * self.linesearch.alpha
+                    # If the line search is the BoundsEnforceLS, it won't
+                    # have an alpha value so we need to catch the error
+                    # and switch to geometric adaptation.
+                    try:
+                        self._tau *= self.options["gamma"] * self.linesearch.alpha
+                    except AttributeError:
+                        self._tau *= self.options["gamma"]
                 else:
                     self._tau *= self.options["gamma"]
 

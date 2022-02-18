@@ -287,7 +287,7 @@ class BracketingLS(LinesearchSolver):
 
             # Shift the brackets over and compute the alpha for the new mid
             self.bracket_high = deepcopy(self.bracket_mid)
-            self.bracket_mid["alpha"] *= self.options["beta"]
+            self.bracket_mid["alpha"] /= self.options["beta"]
 
             # Move the states to the new alpha
             u.add_scal_vec(self.bracket_mid["alpha"] - self.alpha, du)
@@ -339,7 +339,7 @@ class BracketingLS(LinesearchSolver):
         self._mpi_print(self._iter_count, phi, self.alpha)
 
         # Keep forward tracking the bracket until a minimum has been bracketed
-        while self.bracket_mid["phi"] > self.bracket_high["phi"] or self.bracket_mid["phi"] > self.bracket_low["phi"]:
+        while self.bracket_mid["phi"] > self.bracket_high["phi"]:
             # Cache the best step. Since the forward tracking is continuing to look forward,
             # the previous model state is an improvement over the one before it
             self._cache_best_point = self._solver_info.save_cache()

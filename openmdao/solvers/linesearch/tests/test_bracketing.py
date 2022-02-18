@@ -468,19 +468,99 @@ class TestBracketingTrickyBounds(unittest.TestCase):
         p.run_model()
         assert_near_equal(p.get_val('u'), 0.)
 
+class TestBracketingBack(unittest.TestCase):
+    """
+    Test that the backtracking part of bracketing works properly.
+    """
+    def test_backward_bracketing_case_one_return(self):
+        """
+        The objective at the Newton step is greater than at the initial point.
+        The line search cuts the step in half, and the objective there is even
+        greater than at the Newton step. The line search is cut off at this point
+        by setting maxiter appropriately. This test checks that returned value is
+        at the Newton step (since it's lower) rather than the most recently
+        evaluated point (alpha = 1/1.55).
+        """
+        p = create_problem(lambda x: (x - 1)**2 * (2*x + 1)**2 * x**2, (1,),
+                           maxiter=2, beta=1.55)
+        p.set_val('u', val=-0.263)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 1.3543, tolerance=1e-4)  # state at the Newton step
+    
+    def test_backward_bracketing_case_one(self):
+        """
+        The objective at the Newton step is greater than at the initial point.
+        The line search cuts the step in half, and the objective there is even
+        greater than at the Newton step. The backtracking should continue
+        until it brackets the minimum at u = 0 and then use SPI to converge.
+        """
+        p = create_problem(lambda x: (x - 1)**2 * (2*x + 1)**2 * x**2, (1,),
+                           maxiter=30, spi_tol=1e-6, beta=1.55)
+        p.set_val('u', val=-0.263)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-5)
+    
+    def test_backward_bracketing_case_two_return(self):
+        """
+        The objective at the Newton step is greater than at the initial point.
+        The line search cuts the step by beta, and the objective there is less
+        than at the Newton step but greater than the initial point. The line
+        search is cut off at this point by setting maxiter appropriately. This
+        test checks that returned value is at the alpha = 1/beta case rather than
+        at the Newton step.
+        """
+        beta = 2.4
+        p = create_problem(lambda x: (x - 1)**2 * (2*x + 1)**2 * x**2, (1,),
+                           maxiter=2, beta=beta)
+        p.set_val('u', val=-0.265)
+        p.run_model()
+        second_u = (1.3543 + 0.265) / beta - 0.265
+        assert_near_equal(p.get_val('u'), second_u, tolerance=1e-3)
+
+    def test_backward_bracketing_case_two(self):
+        """
+        The objective at the Newton step is greater than at the initial point.
+        The line search cuts the step by beta, and the objective there is less
+        than at the Newton step but greater than the initial point. The line
+        search should then converge to the minimum at u = 0.
+        """
+        beta = 2.4
+        p = create_problem(lambda x: (x - 1)**2 * (2*x + 1)**2 * x**2, (1,),
+                           maxiter=20, spi_tol=1e-6, beta=beta)
+        p.set_val('u', val=-0.265)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-5)
+    
+    def test_backward_bracketing_case_three_return(self):
+        """
+        The objective at the Newton step is greater than at the initial point.
+        The line search cuts the step by beta, and the objective there is less
+        than at the Newton step and at the initial point. The line search is
+        cut off at this point by setting maxiter appropriately. The returned
+        value should be at alpha = 0.5.
+        """
+        p = create_problem(lambda x: (x - 1)**2 * (2*x + 1)**2 * x**2, (1,),
+                           maxiter=2, beta=2)
+        p.set_val('u', val=-0.24)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -0.01815, tolerance=1e-3)
+    
+    def test_backward_bracketing_case_three(self):
+        """
+        The objective at the Newton step is greater than at the initial point.
+        The line search cuts the step by beta, and the objective there is less
+        than at the Newton step and at the initial point. The line search
+        should then converge to the minimum at u = 0.
+        """
+        p = create_problem(lambda x: (x - 1)**2 * (2*x + 1)**2 * x**2, (1,),
+                           maxiter=20, spi_tol=1e-6, beta=2)
+        p.set_val('u', val=-0.24)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-6)
 
 # TODO: figure out a way to test the penalty
 
-# TODO: test this logic thoroughly:
-"""
-It’s not guaranteed that we’re searching in a downhill direction, so there may not be a minimum between the Newton step and alpha = 0.
-There are three cases that happen when the objective at the Newton step is greater than at alpha = 0 and the mid point is evaluated:
-1. The mid point is greater than both the Newton step and initial point. In this case I’m thinking we still continue backtracking?
-2. The mid point is less than the Newton step but greater than the initial point. In this case I’m thinking we keep backtracking and repeat these steps.
-3. The mid point is less than both and it brackets. Enter SPI
-"""
-
-# TODO: check error checking? For example, what happens if the line search starts in the infeasible region
+# TODO: check error checking? For example, what happens if the line search starts in the infeasible region? How to get it to search uphill just in case?
 
 if __name__ == "__main__":
     unittest.main()

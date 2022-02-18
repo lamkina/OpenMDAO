@@ -405,7 +405,7 @@ class TestBracketingTrickyBounds(unittest.TestCase):
         it is greater than the point at alpha = 1, so it should
         still bracket and find the minimum.
         """
-        upper = 0.3
+        upper = 0.6
         def func(x):
             if x >= upper:
                 raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
@@ -424,7 +424,7 @@ class TestBracketingTrickyBounds(unittest.TestCase):
         it is greater than the point at alpha = 1, so it should
         still bracket and find the minimum.
         """
-        lower = 0.3
+        lower = -0.6
         def func(x):
             if x <= lower:
                 raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
@@ -452,7 +452,7 @@ class TestBracketingTrickyBounds(unittest.TestCase):
                            alpha_max=10, beta=2)
         p.set_val('u', val=-0.6)
         p.run_model()
-        assert_near_equal(p.get_val('u'), 0.)
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-5)
     
     def test_backward_bracketing_lower_bound(self):
         """
@@ -470,7 +470,7 @@ class TestBracketingTrickyBounds(unittest.TestCase):
                            alpha_max=10, beta=2)
         p.set_val('u', val=0.6)
         p.run_model()
-        assert_near_equal(p.get_val('u'), 0.)
+        assert_near_equal(p.get_val('u'), 0., tolerance=1e-5)
 
 class TestBracketingBack(unittest.TestCase):
     """
@@ -479,7 +479,7 @@ class TestBracketingBack(unittest.TestCase):
     def test_backward_bracketing_case_one_return(self):
         """
         The objective at the Newton step is greater than at the initial point.
-        The line search cuts the step in half, and the objective there is even
+        The line search cuts the step by beta, and the objective there is even
         greater than at the Newton step. The line search is cut off at this point
         by setting maxiter appropriately. This test checks that returned value is
         at the Newton step (since it's lower) rather than the most recently
@@ -489,7 +489,7 @@ class TestBracketingBack(unittest.TestCase):
                            maxiter=2, beta=1.55)
         p.set_val('u', val=-0.263)
         p.run_model()
-        assert_near_equal(p.get_val('u'), 1.3543, tolerance=1e-4)  # state at the Newton step
+        assert_near_equal(p.get_val('u'), 1.0716, tolerance=1e-4)  # state at the Newton step
     
     def test_backward_bracketing_case_one(self):
         """
@@ -563,6 +563,8 @@ class TestBracketingBack(unittest.TestCase):
         assert_near_equal(p.get_val('u'), 0., tolerance=1e-6)
 
 # TODO: figure out a way to test the penalty
+
+# TODO: test that the norm objective computation works correctly with multi-D functions
 
 # TODO: check error checking? For example, what happens if the line search starts in the infeasible region? How to get it to search uphill just in case?
 

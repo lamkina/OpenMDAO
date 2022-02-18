@@ -204,9 +204,6 @@ class BracketingLS(LinesearchSolver):
         # If phi is less that the original phi and it's not on a bound,
         # we want to continue the search forward.
         if not bounds_enforced:
-            self.bracket_mid = deepcopy(self.bracket_high)
-            self.bracket_high["alpha"] *= self.options["beta"]
-            self.bracket_high["phi"] = None
             return fwd
 
         # Otherwise, report that the line search is on a bound and no
@@ -261,6 +258,7 @@ class BracketingLS(LinesearchSolver):
         best_alpha = self.bracket_high["alpha"]
 
         # Initialize the mid bracket phi
+        self.bracket_mid["alpha"] = self.bracket_high["alpha"] / self.options["beta"]
         u.add_scal_vec(self.bracket_mid["alpha"] - self.alpha, du)
         self.alpha = self.bracket_mid["alpha"]
         self._single_iteration()
@@ -321,6 +319,10 @@ class BracketingLS(LinesearchSolver):
 
         bound_hit = False  # Set to true if a bound or alpha max is reached
 
+        # Update the high bracket
+        self.bracket_mid = deepcopy(self.bracket_high)
+        self.bracket_high["alpha"] *= self.options["beta"]
+        self.bracket_high["phi"] = None
         if self.bracket_high["alpha"] > self.alpha_max:
             bound_hit = True
             self.bracket_high["alpha"] = self.alpha_max

@@ -401,6 +401,12 @@ class BracketingLS(LinesearchSolver):
             z = self.bracket_high["alpha"]
             fz = self.bracket_high["phi"]
 
+            # If it has converged so tightly that the points have the same
+            # alpha or function value (denominator in parabola minimum calc is zero),
+            # break out and return the best point
+            if (y - x) * (fy - fz) - (y - z) * (fy - fx) == 0:
+                break
+
             # Find the minimum of the parabola and evaluate it
             x_min = y + 0.5 * ((y - z) ** 2 * (fy - fx) - (y - x) ** 2 * (fy - fz)) / (
                 (y - x) * (fy - fz) - (y - z) * (fy - fx)

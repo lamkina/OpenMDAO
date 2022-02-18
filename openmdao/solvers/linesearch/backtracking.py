@@ -123,8 +123,8 @@ class BoundsEnforceLS(LinesearchSolver):
         u += du
 
         with Recording("BoundsEnforceLS", self._iter_count, self) as rec:
-            # If this flag is set, the line search will enforce bounds
-            # internally.  If this flag is not set, then the parent
+            # If this flag is set to true, the line search will enforce bounds
+            # internally.  If this flag is set to false, then the parent
             # Newton solver is using the bounded least squares linear
             # solver to handle bounds, so a step of alpha = 1 will
             # take the solver directly to the bounds.
@@ -590,4 +590,3 @@ def _enforce_bounds_wall(u, du, alpha, lower_bounds, upper_bounds):
     # line search by setting the entries of du at the bounds to zero.
     changed_either = change.astype(bool)
     du_data[changed_either] = 0.0
-

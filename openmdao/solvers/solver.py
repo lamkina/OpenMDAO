@@ -833,6 +833,7 @@ class BoundedNonlinearSolver(NonlinearSolver):
                     if not np.isscalar(var_lower):
                         var_lower = var_lower.ravel()
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
+                    np.nan_to_num(self._lower_bounds, copy=False, nan=-np.inf)
 
                 else:
                     self._lower_bounds = np.full(len(system._outputs), -np.inf)
@@ -843,6 +844,7 @@ class BoundedNonlinearSolver(NonlinearSolver):
                     if not np.isscalar(var_upper):
                         var_upper = var_upper.ravel()
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
+                    np.nan_to_num(self._upper_bounds, copy=False, nan=np.inf)
 
                 else:
                     self._upper_bounds = np.full(len(system._outputs), np.inf)
@@ -863,6 +865,8 @@ class BoundedNonlinearSolver(NonlinearSolver):
         if isinstance(self.linear_solver, BoundedLinearSolver):
             self.linear_solver.lower_bounds = self._lower_bounds
             self.linear_solver.upper_bounds = self._upper_bounds
+            if self.linesearch is not None:
+                self.linesearch._do_bounds_enforce = False
 
         # Bounds and bound masks are in the line search base class,
         # so they can be set universally as long as the linesearch

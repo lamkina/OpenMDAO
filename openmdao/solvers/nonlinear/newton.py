@@ -29,7 +29,7 @@ class NewtonSolver(BoundedNonlinearSolver):
         Line search algorithm. Default is None for no line search.
     """
 
-    SOLVER = 'NL: Newton'
+    SOLVER = "NL: Newton"
 
     def __init__(self, **kwargs):
         """
@@ -49,20 +49,26 @@ class NewtonSolver(BoundedNonlinearSolver):
         """
         super()._declare_options()
 
-        self.options.declare('solve_subsystems', types=bool,
-                             desc='Set to True to turn on sub-solvers (Hybrid Newton).')
-        self.options.declare('max_sub_solves', types=int, default=10,
-                             desc='Maximum number of subsystem solves.')
-        self.options.declare('cs_reconverge', types=bool, default=True,
-                             desc='When True, when this driver solves under a complex step, nudge '
-                             'the Solution vector by a small amount so that it reconverges.')
-        self.options.declare('reraise_child_analysiserror', types=bool, default=False,
-                             desc='When the option is true, a solver will reraise any '
-                             'AnalysisError that arises during subsolve; when false, it will '
-                             'continue solving.')
+        self.options.declare("solve_subsystems", types=bool, desc="Set to True to turn on sub-solvers (Hybrid Newton).")
+        self.options.declare("max_sub_solves", types=int, default=10, desc="Maximum number of subsystem solves.")
+        self.options.declare(
+            "cs_reconverge",
+            types=bool,
+            default=True,
+            desc="When True, when this driver solves under a complex step, nudge "
+            "the Solution vector by a small amount so that it reconverges.",
+        )
+        self.options.declare(
+            "reraise_child_analysiserror",
+            types=bool,
+            default=False,
+            desc="When the option is true, a solver will reraise any "
+            "AnalysisError that arises during subsolve; when false, it will "
+            "continue solving.",
+        )
 
-        self.supports['gradients'] = True
-        self.supports['implicit_components'] = True
+        self.supports["gradients"] = True
+        self.supports["implicit_components"] = True
 
     def _setup_solvers(self, system, depth):
         """
@@ -80,8 +86,8 @@ class NewtonSolver(BoundedNonlinearSolver):
 
         self._disallow_discrete_outputs()
 
-        if not isinstance(self.options._dict['solve_subsystems']['val'], bool):
-            msg = '{}: solve_subsystems must be set by the user.'
+        if not isinstance(self.options._dict["solve_subsystems"]["val"], bool):
+            msg = "{}: solve_subsystems must be set by the user."
             raise ValueError(msg.format(self.msginfo))
 
         if self.linear_solver is not None:
@@ -93,7 +99,7 @@ class NewtonSolver(BoundedNonlinearSolver):
             self.linesearch._setup_solvers(system, self._depth + 1)
 
         # Set the bounds for this solver and the line search
-        self._set_bounds()
+        self._set_bounds(system)
 
     def _assembled_jac_solver_iter(self):
         """
@@ -103,7 +109,7 @@ class NewtonSolver(BoundedNonlinearSolver):
             for s in self.linear_solver._assembled_jac_solver_iter():
                 yield s
 
-    def _set_solver_print(self, level=2, type_='all'):
+    def _set_solver_print(self, level=2, type_="all"):
         """
         Control printing for solvers and subsolvers in the model.
 
@@ -118,7 +124,7 @@ class NewtonSolver(BoundedNonlinearSolver):
         """
         super()._set_solver_print(level=level, type_=type_)
 
-        if self.linear_solver is not None and type_ != 'NL':
+        if self.linear_solver is not None and type_ != "NL":
             self.linear_solver._set_solver_print(level=level, type_=type_)
 
         if self.linesearch is not None:
@@ -128,7 +134,7 @@ class NewtonSolver(BoundedNonlinearSolver):
         """
         Run the apply_nonlinear method on the system.
         """
-        self._recording_iter.push(('_run_apply', 0))
+        self._recording_iter.push(("_run_apply", 0))
 
         system = self._system()
 
@@ -153,8 +159,7 @@ class NewtonSolver(BoundedNonlinearSolver):
         bool
             Flag for indicating child linerization
         """
-        return (self.options['solve_subsystems']
-                and self._iter_count <= self.options['max_sub_solves'])
+        return self.options["solve_subsystems"] and self._iter_count <= self.options["max_sub_solves"]
 
     def _linearize(self):
         """
@@ -179,22 +184,21 @@ class NewtonSolver(BoundedNonlinearSolver):
         """
         system = self._system()
 
-        if self.options['debug_print']:
-            self._err_cache['inputs'] = system._inputs._copy_views()
-            self._err_cache['outputs'] = system._outputs._copy_views()
+        if self.options["debug_print"]:
+            self._err_cache["inputs"] = system._inputs._copy_views()
+            self._err_cache["outputs"] = system._outputs._copy_views()
 
         # When under a complex step from higher in the hierarchy, sometimes the step is too small
         # to trigger reconvergence, so nudge the outputs slightly so that we always get at least
         # one iteration of Newton.
-        if system.under_complex_step and self.options['cs_reconverge']:
+        if system.under_complex_step and self.options["cs_reconverge"]:
             system._outputs += np.linalg.norm(system._outputs.asarray()) * 1e-10
 
         # Execute guess_nonlinear if specified.
         system._guess_nonlinear()
 
-        with Recording('Newton_subsolve', 0, self):
-            if self.options['solve_subsystems'] and \
-               (self._iter_count <= self.options['max_sub_solves']):
+        with Recording("Newton_subsolve", 0, self):
+            if self.options["solve_subsystems"] and (self._iter_count <= self.options["max_sub_solves"]):
 
                 self._solver_info.append_solver()
 
@@ -215,37 +219,36 @@ class NewtonSolver(BoundedNonlinearSolver):
         """
         system = self._system()
         self._solver_info.append_subsolver()
-        do_subsolve = self.options['solve_subsystems'] and \
-            (self._iter_count < self.options['max_sub_solves'])
+        do_subsolve = self.options["solve_subsystems"] and (self._iter_count < self.options["max_sub_solves"])
         do_sub_ln = self.linear_solver._linearize_children()
 
         # Disable local fd
         approx_status = system._owns_approx_jac
         system._owns_approx_jac = False
 
-        system._vectors['residual']['linear'].set_vec(system._residuals)
-        system._vectors['residual']['linear'] *= -1.0
+        system._vectors["residual"]["linear"].set_vec(system._residuals)
+        system._vectors["residual"]["linear"] *= -1.0
         my_asm_jac = self.linear_solver._assembled_jac
 
         system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
-        if (my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac):
+        if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
             my_asm_jac._update(system)
 
         self._linearize()
 
-        self.linear_solver.solve('fwd')
+        self.linear_solver.solve("fwd")
 
         if self.linesearch:
             self.linesearch._do_subsolve = do_subsolve
             self.linesearch.solve()
         else:
-            system._outputs += system._vectors['output']['linear']
+            system._outputs += system._vectors["output"]["linear"]
 
         self._solver_info.pop()
 
         # Hybrid newton support.
         if do_subsolve:
-            with Recording('Newton_subsolve', 0, self):
+            with Recording("Newton_subsolve", 0, self):
                 self._solver_info.append_solver()
                 self._gs_iter()
                 self._solver_info.pop()

@@ -336,11 +336,9 @@ class TestBracketingMonatonic(unittest.TestCase):
         assert_near_equal(p.get_val('u'), lower, tolerance=1e-10)
         self.assertGreater(p.get_val('u')[0], lower)
 
-class TestBracketingTrickyBounds(unittest.TestCase):
+class TestBracketingParabola(unittest.TestCase):
     """
-    These tests verifies the accuracy of SPI and
-    also more complex cases where there is a bound
-    but still a minimum in the feasible region.
+    r = u^2
     """
     def test_forward(self):
         """
@@ -357,7 +355,13 @@ class TestBracketingTrickyBounds(unittest.TestCase):
         #   Build parabola and solve for minimum (SPI)
         assert_near_equal(p.get_val('u'), 0.)
         self.assertEqual(p.model.nonlinear_solver.linesearch._iter_count, 3)
-    
+
+class TestBracketingTrickyBounds(unittest.TestCase):
+    """
+    These tests verifies the accuracy of SPI and
+    also more complex cases where there is a bound
+    but still a minimum in the feasible region.
+    """   
     def test_forward_bracketing_upper_bound(self):
         """
         In this case, it forward tracks to the upper bound and the

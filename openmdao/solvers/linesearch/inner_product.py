@@ -189,7 +189,7 @@ class InnerProductLS(LinesearchSolver):
             # the upper bracket equal to alpha max.  If this condition is met,
             # then we set the is_bracketed flag to true because we can no
             # longer search further along this direction.
-            u.add_scal_vec(self.alpha_max - self.alpha)
+            u.add_scal_vec(self.alpha_max - self.alpha, du)
             self.bracket["alpha"]["upper"] = self.alpha_max
             self.alpha = self.bracket["alpha"]["upper"]
             is_bracketed = True

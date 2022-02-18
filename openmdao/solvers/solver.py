@@ -3,7 +3,6 @@
 from collections import OrderedDict
 import os
 import pprint
-import re
 import sys
 import weakref
 
@@ -16,7 +15,6 @@ from openmdao.utils.mpi import MPI
 from openmdao.utils.options_dictionary import OptionsDictionary
 from openmdao.utils.record_util import create_local_meta, check_path
 from openmdao.utils.om_warnings import issue_warning, SolverWarning
-from openmdao.core.component import Component
 
 _emptyset = set()
 
@@ -792,6 +790,90 @@ class NonlinearSolver(Solver):
                         raise err
 
 
+class BoundedNonlinearSolver(NonlinearSolver):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._lower_bounds = None
+        self._upper_bounds = None
+        self._lower_finite_mask = None
+        self._upper_finite_mask = None
+
+        # All of the bounded solvers compute a step direction and
+        # therefor may have a line search or linear solver.
+        self.linesearch = None
+        self.linear_solver = None
+
+    def _set_bounds(self, system):
+        # TODO: write docstring
+        # TODO: add comments that explain what this is doing
+        if system._has_bounds:
+            abs2meta_out = system._var_abs2meta["output"]
+            start = end = 0
+            for abs_name, val in system._outputs._abs_item_iter():
+                end += val.size
+                meta = abs2meta_out[abs_name]
+                var_lower = meta["lower"]
+                var_upper = meta["upper"]
+
+                if var_lower is None and var_upper is None:
+                    start = end
+                    continue
+
+                ref0 = meta["ref0"]
+                ref = meta["ref"]
+
+                if not np.isscalar(ref0):
+                    ref0 = ref0.ravel()
+                if not np.isscalar(ref):
+                    ref = ref.ravel()
+
+                if var_lower is not None:
+                    if self._lower_bounds is None:
+                        self._lower_bounds = np.full(len(system._outputs), -np.inf)
+                    if not np.isscalar(var_lower):
+                        var_lower = var_lower.ravel()
+                    self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
+
+                else:
+                    self._lower_bounds = np.full(len(system._outputs), -np.inf)
+
+                if var_upper is not None:
+                    if self._upper_bounds is None:
+                        self._upper_bounds = np.full(len(system._outputs), np.inf)
+                    if not np.isscalar(var_upper):
+                        var_upper = var_upper.ravel()
+                    self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
+
+                else:
+                    self._upper_bounds = np.full(len(system._outputs), np.inf)
+
+                start = end
+
+        # Otherwise, set bounds to infinity
+        else:
+            self._lower_bounds = np.full(len(system._outputs), -np.inf)
+            self._upper_bounds = np.full(len(system._outputs), np.inf)
+
+        # Set masks that reveal where the bounds have finite values.
+        # This is used to prevent nan's in calculations involving bounds.
+        self._lower_finite_mask = np.isfinite(self._lower_bounds)
+        self._upper_finite_mask = np.isfinite(self._upper_bounds)
+
+        # Check if the linear solver can handle bounds
+        if isinstance(self.linear_solver, BoundedLinearSolver):
+            self.linear_solver.lower_bounds = self._lower_bounds
+            self.linear_solver.upper_bounds = self._upper_bounds
+
+        # Bounds and bound masks are in the line search base class,
+        # so they can be set universally as long as the linesearch
+        # solver is not None
+        if self.linesearch is not None:
+            self.linesearch._lower_bounds = self._lower_bounds
+            self.linesearch._upper_bounds = self._upper_bounds
+            self.linesearch._lower_finite_mask = self._lower_finite_mask
+            self.linesearch._upper_finite_mask = self._upper_finite_mask
+
+
 class LinesearchSolver(NonlinearSolver):
     """
     Base class for line search solvers.
@@ -1138,3 +1220,10 @@ class BlockLinearSolver(LinearSolver):
         self._rel_systems = rel_systems
         self._mode = mode
         self._solve()
+
+
+class BoundedLinearSolver(LinearSolver):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._lower_bounds = None
+        self._upper_bounds = None

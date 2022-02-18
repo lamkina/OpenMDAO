@@ -1,16 +1,12 @@
 """Define the LinearUserDefined class."""
 
-import warnings
 
 import scipy
-from scipy.sparse import csc_matrix
-from scipy.sparse import csr_matrix
 from scipy.optimize import lsq_linear
 import numpy as np
 
-from openmdao.matrices.dense_matrix import DenseMatrix
 from openmdao.utils.array_utils import identity_column_iter
-from openmdao.solvers.solver import LinearSolver
+from openmdao.solvers.solver import BoundedLinearSolver
 
 
 def index_to_varname(system, loc):
@@ -167,7 +163,7 @@ def format_nan_error(system, matrix):
     return msg.format(system.msginfo, ", ".join(varnames))
 
 
-class LinearBLSQ(LinearSolver):
+class LinearBLSQ(BoundedLinearSolver):
     """
     LinearUserDefined solver.
 
@@ -195,8 +191,6 @@ class LinearBLSQ(LinearSolver):
         Initialize all attributes.
         """
         super().__init__(**kwargs)
-        self.lower_bounds = None
-        self.upper_bounds = None
         self.unbounded_step = None
 
     def _declare_options(self):
@@ -283,14 +277,20 @@ class LinearBLSQ(LinearSolver):
             # run solver
             with system._unscaled_context(outputs=[d_outputs], residuals=[d_resids]):
                 opt_result = lsq_linear(
-                    mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u),
-                    method="trf", lsmr_max_iter=10, lsmr_tol=1e-14, verbose=2                )
+                    mtx,
+                    b_vec,
+                    bounds=(self.lower_bounds - u, self.upper_bounds - u),
+                    method="trf",
+                    lsmr_max_iter=10,
+                    lsmr_tol=1e-14,
+                    verbose=2,
+                )
                 x_vec[:] = opt_result["x"]
                 self.unbounded_step = opt_result["x_unbounded"]
         # matrix-vector-product generated jacobians are scaled
         else:
             mtx = self._build_mtx()
             opt_result = lsq_linear(
-                mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=2
+                mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=0
             )
             x_vec[:] = opt_result["x"]

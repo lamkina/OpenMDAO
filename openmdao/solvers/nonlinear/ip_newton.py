@@ -7,16 +7,14 @@ from scipy.sparse import diags
 
 from openmdao.core.analysis_error import AnalysisError
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
-from openmdao.solvers.solver import NonlinearSolver
+from openmdao.solvers.solver import BoundedNonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
 from openmdao.utils.om_warnings import issue_warning, SolverWarning
 from openmdao.solvers.linear.linear_blsq import LinearBLSQ
-from openmdao.solvers.linesearch.bracketing import BracketingLS
-from openmdao.solvers.linesearch.inner_product import InnerProductLS
 
 
-class IPNewtonSolver(NonlinearSolver):
+class IPNewtonSolver(BoundedNonlinearSolver):
     """
     Newton solver.
 
@@ -50,10 +48,6 @@ class IPNewtonSolver(NonlinearSolver):
         # Slot for linesearch
         self.linesearch = BoundsEnforceLS()
 
-        # Upper and lower bounds
-        self._lower_bounds = None
-        self._upper_bounds = None
-
         # Slots for d_alpha vectors
         self._d_alpha_upper = None
         self._d_alpha_lower = None
@@ -61,10 +55,6 @@ class IPNewtonSolver(NonlinearSolver):
         # Penalty parameter
         self._mu_lower = None
         self._mu_upper = None
-
-        # Finite bounds masks
-        self._lower_finite_mask = None
-        self._upper_finite_mask = None
 
         # Pseudo-Transient time step
         self._tau = None
@@ -129,73 +119,6 @@ class IPNewtonSolver(NonlinearSolver):
         self.supports["gradients"] = True
         self.supports["implicit_components"] = True
 
-    def _set_bounds(self, system):
-        # TODO: write docstring
-        # TODO: add comments that explain what this is doing
-        if system._has_bounds:
-            abs2meta_out = system._var_abs2meta["output"]
-            start = end = 0
-            for abs_name, val in system._outputs._abs_item_iter():
-                end += val.size
-                meta = abs2meta_out[abs_name]
-                var_lower = meta["lower"]
-                var_upper = meta["upper"]
-
-                if var_lower is None and var_upper is None:
-                    start = end
-                    continue
-
-                ref0 = meta["ref0"]
-                ref = meta["ref"]
-
-                if not np.isscalar(ref0):
-                    ref0 = ref0.ravel()
-                if not np.isscalar(ref):
-                    ref = ref.ravel()
-
-                if var_lower is not None:
-                    if self._lower_bounds is None:
-                        self._lower_bounds = np.full(len(system._outputs), -np.inf)
-                    if not np.isscalar(var_lower):
-                        var_lower = var_lower.ravel()
-                    self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
-
-                else:
-                    self._lower_bounds = np.full(len(system._outputs), -np.inf)
-
-                if var_upper is not None:
-                    if self._upper_bounds is None:
-                        self._upper_bounds = np.full(len(system._outputs), np.inf)
-                    if not np.isscalar(var_upper):
-                        var_upper = var_upper.ravel()
-                    self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
-
-                else:
-                    self._upper_bounds = np.full(len(system._outputs), np.inf)
-
-                start = end
-        
-        # Otherwise, set bounds to infinity
-        else:
-            self._lower_bounds = np.full(len(system._outputs), -np.inf)
-            self._upper_bounds = np.full(len(system._outputs), np.inf)
-
-        self._lower_finite_mask = np.isfinite(self._lower_bounds)
-        self._upper_finite_mask = np.isfinite(self._upper_bounds)
-
-        if isinstance(self.linear_solver, LinearBLSQ):
-            self.linear_solver.lower_bounds = self._lower_bounds
-            self.linear_solver.upper_bounds = self._upper_bounds
-
-        # Bounds and bound masks are in the line search base class,
-        # so they can be set universally as long as the linesearch
-        # solver is not None
-        if self.linesearch is not None:
-            self.linesearch._lower_bounds = self._lower_bounds
-            self.linesearch._upper_bounds = self._upper_bounds
-            self.linesearch._lower_finite_mask = self._lower_finite_mask
-            self.linesearch._upper_finite_mask = self._upper_finite_mask
-
     def _setup_solvers(self, system, depth):
         """
         Assign system instance, set depth, and optionally perform setup.
@@ -208,7 +131,7 @@ class IPNewtonSolver(NonlinearSolver):
             depth of the current system (already incremented).
         """
         super()._setup_solvers(system, depth)
-        rank = MPI.COMM_WORLD.rank if MPI is not None else 0
+        rank = MPI.COMM_WORLD.rank if MPI is not None else 0  # noqa
 
         self._disallow_discrete_outputs()
 
@@ -474,7 +397,10 @@ class IPNewtonSolver(NonlinearSolver):
                     self.linesearch._mu_upper = self._mu_upper
 
             if self.options["pseudo_transient"]:
-                self._tau *= self.options["gamma"] * self.linesearch.alpha
+                if self.linesearch is not None:
+                    self._tau *= self.options["gamma"] * self.linesearch.alpha
+                else:
+                    self._tau *= self.options["gamma"]
 
         # Disable local fd
         approx_status = system._owns_approx_jac

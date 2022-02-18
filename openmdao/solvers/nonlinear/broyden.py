@@ -7,7 +7,7 @@ import numpy as np
 
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
-from openmdao.solvers.solver import NonlinearSolver
+from openmdao.solvers.solver import BoundedNonlinearSolver
 from openmdao.utils.class_util import overrides_method
 from openmdao.utils.om_warnings import issue_warning, SetupWarning
 from openmdao.utils.mpi import MPI
@@ -25,7 +25,7 @@ CITATION = """@ARTICLE{
               }"""
 
 
-class BroydenSolver(NonlinearSolver):
+class BroydenSolver(BoundedNonlinearSolver):
     """
     Broyden solver.
 
@@ -165,6 +165,9 @@ class BroydenSolver(NonlinearSolver):
         if self.linesearch is not None:
             self.linesearch._setup_solvers(system, self._depth + 1)
             self.linesearch._do_subsolve = True
+
+        # Set the bounds for this solver and the line search
+        self._set_bounds()
 
         # this check is incorrect (for broyden) and needs to be done differently.
         # self._disallow_distrib_solve()

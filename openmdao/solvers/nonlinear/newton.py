@@ -4,12 +4,12 @@
 import numpy as np
 
 from openmdao.solvers.linesearch.backtracking import BoundsEnforceLS
-from openmdao.solvers.solver import NonlinearSolver
+from openmdao.solvers.solver import BoundedNonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.mpi import MPI
 
 
-class NewtonSolver(NonlinearSolver):
+class NewtonSolver(BoundedNonlinearSolver):
     """
     Newton solver.
 
@@ -91,6 +91,9 @@ class NewtonSolver(NonlinearSolver):
 
         if self.linesearch is not None:
             self.linesearch._setup_solvers(system, self._depth + 1)
+
+        # Set the bounds for this solver and the line search
+        self._set_bounds()
 
     def _assembled_jac_solver_iter(self):
         """

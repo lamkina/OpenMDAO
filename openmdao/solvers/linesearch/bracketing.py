@@ -274,7 +274,7 @@ class BracketingLS(LinesearchSolver):
         self._mpi_print(self._iter_count, phi, self.alpha)
 
         # Keep forward tracking the bracket until a minimum has been bracketed
-        while self.bracket_mid["phi"] > self.bracket_high["phi"] or self.bracket_mid["phi"] > self.bracket_low["phi"]:
+        while self.bracket_mid["phi"] >= self.bracket_high["phi"] or self.bracket_mid["phi"] >= self.bracket_low["phi"]:
             # If the max number of iterations has been reached, break out and return the value
             if self._iter_count >= maxiter:
                 self._solver_info.restore_cache(self._cache_best_point)
@@ -341,7 +341,7 @@ class BracketingLS(LinesearchSolver):
         self._mpi_print(self._iter_count, phi, self.alpha)
 
         # Keep forward tracking the bracket until a minimum has been bracketed
-        while self.bracket_mid["phi"] > self.bracket_high["phi"]:
+        while self.bracket_mid["phi"] >= self.bracket_high["phi"]:
             # Cache the best step. Since the forward tracking is continuing to look forward,
             # the previous model state is an improvement over the one before it
             self._cache_best_point = self._solver_info.save_cache()

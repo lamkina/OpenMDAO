@@ -211,6 +211,8 @@ class BracketingLS(LinesearchSolver):
 
         # Otherwise, report that the line search is on a bound and no
         # more bracketing operations can be done.
+        self.SOLVER = "LS: BRKT final"
+        self._mpi_print(self._iter_count, phi, self.alpha)
         return bnd
 
     def _single_iteration(self):
@@ -243,14 +245,75 @@ class BracketingLS(LinesearchSolver):
         else:
             self._run_apply()
 
+    def _bwd_bracketing(self):
+        """
+        Returns
+        -------
+        bool
+            True if hits maxiter iterations, false otherwise
+        """
+        self.SOLVER = "LS: BRKT BWD"
+        system = self._system()
+        maxiter = self.options["maxiter"]
+        u = system._outputs
+        du = system._vectors["output"]["linear"]
+        best_phi = self.bracket_high["phi"]
+        best_alpha = self.bracket_high["alpha"]
+
+        # Initialize the mid bracket phi
+        u.add_scal_vec(self.bracket_mid["alpha"] - self.alpha, du)
+        self.alpha = self.bracket_mid["alpha"]
+        self._single_iteration()
+        phi = self.bracket_mid["phi"] = self._line_search_objective()
+        self._iter_count += 1
+
+        # Cache the best step
+        if self.bracket_mid["phi"] < self.bracket_high["phi"]:
+            best_phi = self.bracket_mid["phi"]
+            best_alpha = self.bracket_mid["alpha"]
+            self._cache_best_point = self._solver_info.save_cache()
+
+        self._mpi_print(self._iter_count, phi, self.alpha)
+
+        # Keep forward tracking the bracket until a minimum has been bracketed
+        while self.bracket_mid["phi"] > self.bracket_high["phi"] or self.bracket_mid["phi"] > self.bracket_low["phi"]:
+            # If the max number of iterations has been reached, break out and return the value
+            if self._iter_count >= maxiter:
+                self._solver_info.restore_cache(self._cache_best_point)
+                u.add_scal_vec(best_alpha - self.alpha, du)
+                self.SOLVER = "LS: BRKT final"
+                self._mpi_print(self._iter_count, best_phi, best_alpha)
+                return True
+
+            # Shift the brackets over and compute the alpha for the new mid
+            self.bracket_high = deepcopy(self.bracket_mid)
+            self.bracket_mid["alpha"] *= self.options["beta"]
+
+            # Move the states to the new alpha
+            u.add_scal_vec(self.bracket_mid["alpha"] - self.alpha, du)
+            self.alpha = self.bracket_mid["alpha"]
+            self._single_iteration()
+            phi = self.bracket_mid["phi"] = self._line_search_objective()
+            self._iter_count += 1
+
+            # Cache the mid point if it's better than the current best
+            if self.bracket_mid["phi"] < best_phi:
+                best_phi = self.bracket_mid["phi"]
+                best_alpha = self.bracket_mid["alpha"]
+                self._cache_best_point = self._solver_info.save_cache()
+
+            self._mpi_print(self._iter_count, phi, self.alpha)
+
+        return False
+
     def _fwd_bracketing(self):
         """
         Returns
         -------
         bool
-            True if bound is hit without bracketing, false otherwise
+            True if bound is hit without bracketing or hits maxiter iterations, false otherwise
         """
-        self.SOLVER = "LS: FWD BRKT"
+        self.SOLVER = "LS: BRKT FWD"
         system = self._system()
         maxiter = self.options["maxiter"]
         u = system._outputs
@@ -281,12 +344,11 @@ class BracketingLS(LinesearchSolver):
             # the previous model state is an improvement over the one before it
             self._cache_best_point = self._solver_info.save_cache()
 
-            # If the max number of iterations has been reached, break out and return the value
-            if self._iter_count >= maxiter:
-                return True
-
-            # If a bound has been hit and it makes it this far, it means it has not been bracketed
-            if bound_hit:
+            # If the max number of iterations has been reached or a bound has been hit (thus, not bracketed),
+            # break out and return the value
+            if self._iter_count >= maxiter or bound_hit:
+                self.SOLVER = "LS: BRKT final"
+                self._mpi_print(self._iter_count, phi, self.alpha)
                 return True
 
             # Shift the brackets over and compute the alpha for the new high
@@ -317,46 +379,12 @@ class BracketingLS(LinesearchSolver):
         self.bracket_mid["alpha"] is None (bracketed at the first
         step), it assumes that the cached state is at alpha = 1.
         """
-        self.SOLVER = "LS: SPI"
+        self.SOLVER = "LS: BRKT SPI"
         system = self._system()
         u = system._outputs
         du = system._vectors["output"]["linear"]
 
         maxiter = self.options["maxiter"]
-
-        # Set the midpoint step and objective value
-        if self.bracket_mid["alpha"] is None:
-            self.bracket_mid["alpha"] = self.bracket_high["alpha"] / self.options["beta"]
-            u.add_scal_vec(self.bracket_mid["alpha"] - self.alpha, du)
-            self.alpha = self.bracket_mid["alpha"]
-            self._single_iteration()
-            phi = self.bracket_mid["phi"] = self._line_search_objective()
-            self._iter_count += 1
-
-            self._mpi_print(self._iter_count, phi, self.alpha)
-
-            # If we are not guaranteed a minimum within the bracket,
-            # just take the Newton step. As far as we can tell,
-            # using the combination of the penalized residual in the line search
-            # and the "unsteady" Newton linear system formulation does not guarantee
-            # that the line search will be searching in a downhill direction;
-            # d(phi)/d(alpha) is not necessarily negative at alpha = 0
-            if (
-                self.bracket_mid["phi"] >= self.bracket_high["phi"]
-                or self.bracket_mid["phi"] >= self.bracket_low["phi"]
-            ):
-                self._solver_info.restore_cache(self._cache_best_point)
-                u.add_scal_vec(self.bracket_high["alpha"] - self.alpha, du)
-                self.alpha = self.bracket_high["alpha"]
-                phi = self._line_search_objective()
-
-                self._mpi_print(self._iter_count, self.bracket_high["phi"], self.alpha)
-
-                return
-
-            # Otherwise, the mid point is better than either of the points
-            # tested so far; cache it as the best point
-            self._cache_best_point = self._solver_info.save_cache()
 
         # Initialize value for parabola minimum to enter the while loop
         x_min = np.inf
@@ -430,10 +458,8 @@ class BracketingLS(LinesearchSolver):
         u.add_scal_vec(y - self.alpha, du)
         self.alpha = y
         phi = self._line_search_objective()
-        self.SOLVER = "LS: SPI final"
+        self.SOLVER = "LS: BRKT final"
         self._mpi_print(self._iter_count, self.bracket_mid["phi"], self.bracket_mid["alpha"])
-
-        return
 
     def _solve(self):
         """
@@ -444,6 +470,7 @@ class BracketingLS(LinesearchSolver):
         brkt_dir = self._iter_initialize()
 
         fwd = 0
+        bak = 1
         bnd = 2
 
         if brkt_dir == bnd:
@@ -453,6 +480,10 @@ class BracketingLS(LinesearchSolver):
             # Bracket it forward and return without running SPI
             # if it hits a bound without bracketing a minimum
             if self._fwd_bracketing():
+                return
+        elif brkt_dir == bak:
+            # If maxiters is hit, return
+            if self._bwd_bracketing():
                 return
 
         self._spi()

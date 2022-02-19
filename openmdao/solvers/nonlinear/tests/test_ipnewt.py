@@ -380,15 +380,16 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
                 p.model.linear_solver = lin_sol
 
                 nl_solver.linesearch = ls
+                if isinstance(ls, om.BracketingLS):
+                    nl_solver.linesearch.options["spi_tol"] = 1e-15
+                    nl_solver.linesearch.options["maxiter"] = 50
                 p.setup()
                 p.set_val("u", np.full(5, 4))
                 p.run_model()
 
-                # print(f"{type(ls)}, {type(lin_sol)}: {nl_solver._iter_count}")
-
                 # If we are using the inner product line search, it should overcome the pt
                 # limit and find the solution to the linear problem in one major iteration.
-                if isinstance(ls, om.InnerProductLS):
+                if isinstance(ls, (om.InnerProductLS, om.BracketingLS)):
                     self.assertEqual(nl_solver._iter_count, 1)
                 else:
                     self.assertGreater(nl_solver._iter_count, 1)

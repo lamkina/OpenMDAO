@@ -809,6 +809,11 @@ class BoundedNonlinearSolver(NonlinearSolver):
         if system._has_bounds:
             abs2meta_out = system._var_abs2meta["output"]
             start = end = 0
+
+            # Initialize the bounds
+            self._lower_bounds = np.full(len(system._outputs), -np.inf)
+            self._upper_bounds = np.full(len(system._outputs), np.inf)
+
             for abs_name, val in system._outputs._abs_item_iter():
                 end += val.size
                 meta = abs2meta_out[abs_name]
@@ -835,9 +840,6 @@ class BoundedNonlinearSolver(NonlinearSolver):
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
                     np.nan_to_num(self._lower_bounds, copy=False, nan=-np.inf)
 
-                else:
-                    self._lower_bounds = np.full(len(system._outputs), -np.inf)
-
                 if var_upper is not None:
                     if self._upper_bounds is None:
                         self._upper_bounds = np.full(len(system._outputs), np.inf)
@@ -845,9 +847,6 @@ class BoundedNonlinearSolver(NonlinearSolver):
                         var_upper = var_upper.ravel()
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
                     np.nan_to_num(self._upper_bounds, copy=False, nan=np.inf)
-
-                else:
-                    self._upper_bounds = np.full(len(system._outputs), np.inf)
 
                 start = end
 

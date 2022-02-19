@@ -37,7 +37,7 @@ jobs:
       - name: Install OpenMDAO
         shell: bash -l {0}
         run: |
-          pip install numpy
+          pip install numpy pytest
 
           echo "============================================================="
           echo "Install SciPy from Eytan's GitHub branch"
@@ -47,20 +47,14 @@ jobs:
           echo "============================================================="
           echo "Install OpenMDAO"
           echo "============================================================="
-          pip install .[test]
+          pip install .
 
-      - name: Run tests
+      - name: Run BracketingLS tests
         shell: bash -l {0}
         run: |
-          ls
-          cd OpenMDAO/openmdao/solvers
+          pytest openmdao/solvers/linesearch/tests/test_backtracking.py
 
-          echo "============================================================="
-          echo "Run BracketingLS tests"
-          echo "============================================================="
-          pytest linesearch/tests/test_backtracking.py
-
-          echo "============================================================="
-          echo "Run IPNewton tests"
-          echo "============================================================="
-          pytest nonlinear/tests/test_ipnewt.py
+      - name: Run IPNewton tests
+        shell: bash -l {0}
+        run: |
+          pytest openmdao/solvers/nonlinear/tests/test_ipnewt.py

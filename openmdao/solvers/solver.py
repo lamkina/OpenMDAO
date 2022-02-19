@@ -838,7 +838,7 @@ class BoundedNonlinearSolver(NonlinearSolver):
                     if not np.isscalar(var_lower):
                         var_lower = var_lower.ravel()
                     self._lower_bounds[start:end] = (var_lower - ref0) / (ref - ref0)
-                    np.nan_to_num(self._lower_bounds, copy=False, nan=-np.inf)
+                    np.nan_to_num(self._lower_bounds, copy=False, nan=-np.inf, neginf=-np.inf)
 
                 if var_upper is not None:
                     if self._upper_bounds is None:
@@ -846,7 +846,7 @@ class BoundedNonlinearSolver(NonlinearSolver):
                     if not np.isscalar(var_upper):
                         var_upper = var_upper.ravel()
                     self._upper_bounds[start:end] = (var_upper - ref0) / (ref - ref0)
-                    np.nan_to_num(self._upper_bounds, copy=False, nan=np.inf)
+                    np.nan_to_num(self._upper_bounds, copy=False, nan=np.inf, posinf=np.inf)
 
                 start = end
 

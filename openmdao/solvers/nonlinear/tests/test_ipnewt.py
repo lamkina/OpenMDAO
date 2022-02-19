@@ -8,6 +8,26 @@ import openmdao.api as om
 from openmdao.utils.assert_utils import assert_near_equal
 from numpy.testing import assert_array_equal
 
+ls_list = [om.BoundsEnforceLS(), om.ArmijoGoldsteinLS(), om.InnerProductLS(), om.BracketingLS()]
+lin_sol_list = [om.DirectSolver(assemble_jac=True), om.LinearBLSQ(assemble_jac=True)]
+
+
+class MultOutComp(om.ImplicitComponent):
+    def setup(self):
+        self.add_output("u1")
+        self.add_output("u2", lower=-1.0)
+        self.add_output("u3", upper=-3.0)
+        self.add_output("u4", lower=-2.0, upper=3.0)
+
+    def setup_partials(self):
+        self.declare_partials(of=["*"], wrt=["*"], method="cs")
+
+    def apply_nonlinear(self, inputs, outputs, residuals):
+        residuals["u1"] = outputs["u1"] * outputs["u2"]
+        residuals["u2"] = np.cos(outputs["u3"]) * np.exp(outputs["u4"]) - outputs["u1"]
+        residuals["u3"] = -outputs["u3"]
+        residuals["u4"] = 1 / outputs["u3"]
+
 
 def create_comp(res_func, shape, lower=None, upper=None, deriv_method="cs"):
     """Create an OpenMDAO component from a residual function.
@@ -84,7 +104,6 @@ def create_problem(res_func, shape, lower=None, upper=None, deriv_method="cs"):
     p.model.add_subsystem(
         "comp", create_comp(res_func, shape, lower=lower, upper=upper, deriv_method=deriv_method)(), promotes=["*"]
     )
-    p.setup()
     return p
 
 
@@ -98,16 +117,17 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (1,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        lin_solver = p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        ls = nl_solver.linesearch = None
+        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
+        nl_solver.linesearch = None
 
         with self.assertRaises(ValueError) as context:
+            p.setup()
             p.run_model()
 
         msg = "IPNewtonSolver in <model> <class Group>: solve_subsystems must be set by the user."
         self.assertEqual(str(context.exception), msg)
 
-    def test_unbounded_direct_no_linesearch(self):
+    def test_unbounded_no_linesearch(self):
         """Test to make sure the solver reaches the solution to a
         linear problem in a single iteration.
         - Bounds: None
@@ -116,19 +136,23 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (1,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
         nl_solver.linesearch = None
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["pseudo_transient"] = False
 
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
 
-        assert_near_equal(p.get_val("u"), 0.0)
-        self.assertEqual(nl_solver._iter_count, 1)
+            p.setup()
 
-    def test_direct_no_linesearch_with_pt(self):
+            p.run_model()
+
+            assert_near_equal(p.get_val("u"), 0.0)
+            self.assertEqual(nl_solver._iter_count, 1)
+
+    def test_no_linesearch_with_pt(self):
         """Test that pseudo transient continuation will work without
         a line search and will take more than a single iteration.
         - Bounds: None
@@ -137,7 +161,6 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (1,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
         nl_solver.linesearch = None
 
         nl_solver.options["solve_subsystems"] = True
@@ -147,18 +170,23 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["tau"] = 0.5
 
-        p.set_val("u", 1.5)
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
 
-        self.assertGreaterEqual(nl_solver._iter_count, 1)
-        self.assertNotEqual(p.get_val("u"), 1)
-        assert_near_equal(p.get_val("u"), 0.0, tolerance=1e-10)
+            p.setup()
 
-    def test_direct_with_pt(self):
+            p.set_val("u", 1.5)
+            p.run_model()
+
+            self.assertGreaterEqual(nl_solver._iter_count, 1)
+            self.assertNotEqual(p.get_val("u"), 1)
+            assert_near_equal(p.get_val("u"), 0.0, tolerance=1e-10)
+
+    def test_with_pt(self):
         """Test that pseudo transient continuation will work with
         a line search and will take more than a single iteration.
         - Bounds: None
-        - LinearSolver: Direct
+        - LinearSolver: Direct and BLSQ
         - Linesearch: BoundsEnforceLS (Default)
         """
         p = create_problem(lambda x: x, (1,))
@@ -172,14 +200,19 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["tau"] = 0.5
 
-        p.set_val("u", 1.5)
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
 
-        self.assertGreaterEqual(nl_solver._iter_count, 1)
-        self.assertNotEqual(p.get_val("u"), 1)
-        assert_near_equal(p.get_val("u"), 0.0, tolerance=1e-10)
+            p.setup()
 
-    def test_direct_be_linesearch(self):
+            p.set_val("u", 1.5)
+            p.run_model()
+
+            self.assertGreaterEqual(nl_solver._iter_count, 1)
+            self.assertNotEqual(p.get_val("u"), 1)
+            assert_near_equal(p.get_val("u"), 0.0, tolerance=1e-10)
+
+    def test_direct_with_linesearch(self):
         """Test that the solver will find the solution in a single major
         iteration when using the bounds enforce line search without bounds.
         - Bounds: None
@@ -189,20 +222,22 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         p = create_problem(lambda x: x, (1,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
         p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BoundsEnforceLS()
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["iprint"] = 1
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        p.set_val("u", 4.0)
-        p.run_model()
+        for ls in ls_list:
+            nl_solver.linesearch = ls
+            p.setup()
+            p.set_val("u", 4.0)
+            p.run_model()
 
-        self.assertGreaterEqual(nl_solver._iter_count, 1)
-        self.assertEqual(p.get_val("u"), 0)
+            self.assertGreaterEqual(nl_solver._iter_count, 1)
+            self.assertEqual(p.get_val("u"), 0)
 
-    def test_direct_ag_linesearch(self):
+    def test_blsq_with_linesearch(self):
         """Test that the solver will find the solution in a single major
         iteration when using the bounds enforce line search without bounds.
         - Bounds: None
@@ -211,72 +246,28 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (1,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.ArmijoGoldsteinLS()
+        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["iprint"] = 1
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        p.set_val("u", 4.0)
-        p.run_model()
+        for ls in ls_list:
+            nl_solver.linesearch = ls
+            p.setup()
+            p.set_val("u", 4.0)
+            p.run_model()
 
-        self.assertGreaterEqual(nl_solver._iter_count, 1)
-        self.assertEqual(p.get_val("u"), 0)
-
-    def test_direct_ip_linesearch(self):
-        """Test that the solver will find the solution in a single major
-        iteration when using the bounds enforce line search without bounds.
-        - Bounds: None
-        - LinearSolver: DirectSolver
-        - Linesearch: BoundsEnforceLS
-        """
-        p = create_problem(lambda x: x, (1,))
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.InnerProductLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 4.0)
-        p.run_model()
-
-        self.assertGreaterEqual(nl_solver._iter_count, 1)
-        self.assertEqual(p.get_val("u"), 0)
-
-    def test_direct_brk_linesearch(self):
-        """Test that the solver will find the solution in a single major
-        iteration when using the bounds enforce line search without bounds.
-        - Bounds: None
-        - LinearSolver: DirectSolver
-        - Linesearch: BoundsEnforceLS
-        """
-        p = create_problem(lambda x: x, (1,))
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 4.0)
-        p.run_model()
-
-        self.assertGreaterEqual(nl_solver._iter_count, 1)
-        self.assertEqual(p.get_val("u"), 0)
+            self.assertGreaterEqual(nl_solver._iter_count, 1)
+            self.assertEqual(p.get_val("u"), 0)
 
 
 class TestIPNewtonUnboundedVec(unittest.TestCase):
     def setUp(self):
-        self.ls_list = [om.BoundsEnforceLS(), om.ArmijoGoldsteinLS(), om.InnerProductLS(), om.BracketingLS()]
+        pass
 
-    def test_direct_no_linesearch(self):
+    def test_no_linesearch(self):
         """Test to check if the solver can find the solution to a linear
         problem with vectorized states.
         - Bounds: None
@@ -285,7 +276,6 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (5,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
         nl_solver.linesearch = None
 
         nl_solver.options["solve_subsystems"] = True
@@ -293,34 +283,15 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        p.set_val("u", 4.0)
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
+            p.setup()
 
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_array_equal(p.get_val("u"), np.zeros(5))
+            p.set_val("u", 4.0)
+            p.run_model()
 
-    def test_blsq_no_linesearch(self):
-        """Test to check if the solver can find the solution to a linear
-        problem with vectorized states.
-        - Bounds: None
-        - LinearSolver: LinearBLSQ
-        - Linesearch: None
-        """
-        p = create_problem(lambda x: x, (5,))
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-        nl_solver.linesearch = None
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 4.0)
-        p.run_model()
-
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-14)
+            self.assertEqual(nl_solver._iter_count, 1)
+            assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-14)
 
     def test_direct_with_linesearch(self):
         """Test to see if the solver can find the solution to the linear
@@ -338,11 +309,10 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        for i, ls in enumerate(self.ls_list):
+        for ls in ls_list:
             nl_solver.linesearch = ls
 
-            if i > 0:  # Only run setup after first loop
-                p.setup()
+            p.setup()
             p.set_val("u", 4.0)
             p.run_model()
 
@@ -365,21 +335,19 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        for i, ls in enumerate(self.ls_list):
+        for ls in ls_list:
             nl_solver.linesearch = ls
 
-            if i > 0:  # Only run setup after first loop
-                p.setup()
+            p.setup()
             p.set_val("u", 4.0)
             p.run_model()
 
             self.assertEqual(nl_solver._iter_count, 1)
             assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-14)
 
-    def test_pt_direct_no_linesearch(self):
+    def test_pt_no_linesearch(self):
         p = create_problem(lambda x: x, (5,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
         nl_solver.linesearch = None
 
         nl_solver.options["solve_subsystems"] = True
@@ -388,35 +356,18 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["tau"] = 5.0
 
-        p.set_val("u", np.full(5, 4))
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
+            p.setup()
+            p.set_val("u", np.full(5, 4))
+            p.run_model()
 
-        self.assertGreater(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
+            self.assertGreater(nl_solver._iter_count, 1)
+            assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
 
-    def test_pt_blsq_no_linesearch(self):
+    def test_pt_with_linesearch(self):
         p = create_problem(lambda x: x, (5,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-        nl_solver.linesearch = None
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = True
-        nl_solver.options["interior_penalty"] = False
-        nl_solver.options["tau"] = 5.0
-
-        p.set_val("u", np.full(5, 4))
-        p.run_model()
-
-        self.assertGreater(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
-
-    def test_pt_blsq_with_linesearch(self):
-        p = create_problem(lambda x: x, (5,))
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["iprint"] = 1
@@ -424,63 +375,43 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["tau"] = 10.0
 
-        p.set_val("u", np.full(5, 4))
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            for ls in ls_list:
+                p.model.linear_solver = lin_sol
 
-        self.assertGreater(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
+                nl_solver.linesearch = ls
+                p.setup()
+                p.set_val("u", np.full(5, 4))
+                p.run_model()
 
-    def test_pt_direct_with_linesearch(self):
+                # print(f"{type(ls)}, {type(lin_sol)}: {nl_solver._iter_count}")
+
+                # If we are using the inner product line search, it should overcome the pt
+                # limit and find the solution to the linear problem in one major iteration.
+                if isinstance(ls, om.InnerProductLS):
+                    self.assertEqual(nl_solver._iter_count, 1)
+                else:
+                    self.assertGreater(nl_solver._iter_count, 1)
+
+                assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-9)
+
+    def test_penalty_no_linesearch(self):
         p = create_problem(lambda x: x, (5,))
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = True
-        nl_solver.options["interior_penalty"] = False
-        nl_solver.options["tau"] = 10.0
-
-        p.set_val("u", np.full(5, 4))
-        p.run_model()
-
-        self.assertGreater(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
-
-    def test_penalty_direct_no_linesearch(self):
-        p = create_problem(lambda x: x, (5,))
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["iprint"] = 1
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = True
 
-        p.set_val("u", np.full(5, 4))
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
+            p.setup()
+            p.set_val("u", np.full(5, 4))
+            p.run_model()
 
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
-
-    def test_penalty_blsq_no_linesearch(self):
-        p = create_problem(lambda x: x, (5,))
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = True
-
-        p.set_val("u", np.full(5, 4))
-        p.run_model()
-
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
+            self.assertEqual(nl_solver._iter_count, 1)
+            assert_near_equal(p.get_val("u"), np.zeros(5), tolerance=1e-10)
 
 
 class TestIPNewtonBoundedScalar(unittest.TestCase):
@@ -505,6 +436,7 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
+        p.setup()
         p.set_val("u", 1.5)
         p.run_model()
 
@@ -529,13 +461,14 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
+        p.setup()
         p.set_val("u", 1.5)
         p.run_model()
 
         self.assertEqual(nl_solver._iter_count, 10)
         assert_near_equal(p.get_val("u"), 2, tolerance=1e-10)
 
-    def test_lower_bound_direct_no_penalty(self):
+    def test_lower_bound_no_penalty(self):
         """Test that a bounded problem with a direct linear solver and
         the default line search will find the bounded solution in a single
         iteration when the penalty and pt are turned off.
@@ -545,7 +478,6 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (1,), lower=1, upper=2)
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["maxiter"] = 1
@@ -553,14 +485,17 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["pseudo_transient"] = False
 
-        p.set_val("u", 1.5)
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
+            p.setup()
+            p.set_val("u", 1.5)
 
-        p.run_model()
+            p.run_model()
 
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-10)
+            self.assertEqual(nl_solver._iter_count, 1)
+            assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-10)
 
-    def test_upper_bound_direct_no_penalty(self):
+    def test_upper_bound_no_penalty(self):
         """Test that a bounded problem with a direct linear solver and
         the default line search will find the bounded solution in a single
         iteration when the penalty and pt are turned off.
@@ -570,7 +505,6 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: -x + 3, (1,), lower=1, upper=2)
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["maxiter"] = 1
@@ -578,62 +512,15 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
         nl_solver.options["pseudo_transient"] = False
 
-        p.set_val("u", 1.5)
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
+            p.setup()
+            p.set_val("u", 1.5)
 
-        p.run_model()
+            p.run_model()
 
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-10)
-
-    def test_lower_bound_blsq_no_penalty(self):
-        """Test that a bounded problem with a blsq linear solver and the
-        default line search will find the bounded solution in a single
-        iteration when the penalty and pt are turned off.
-        - Bounds: lower=1, upper=2
-        - LinearSolver: LinearBLSQ
-        - Linesearch: BoundsEnforceLS (Default)
-        """
-        p = create_problem(lambda x: x, (1,), lower=1, upper=2)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["maxiter"] = 1
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["interior_penalty"] = False
-        nl_solver.options["pseudo_transient"] = False
-
-        p.set_val("u", 1.5)
-
-        p.run_model()
-
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-10)
-
-    def test_upper_bound_blsq_no_penalty(self):
-        """Test that a bounded problem with a blsq linear solver and the
-        default line search will find the bounded solution in a single
-        iteration when the penalty and pt are turned off.
-        - Bounds: lower=1, upper=2
-        - LinearSolver: LinearBLSQ
-        - Linesearch: BoundsEnforceLS (Default)
-        """
-        p = create_problem(lambda x: -x + 3, (1,), lower=1, upper=2)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["maxiter"] = 1
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["interior_penalty"] = False
-        nl_solver.options["pseudo_transient"] = False
-
-        p.set_val("u", 1.5)
-
-        p.run_model()
-
-        self.assertEqual(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-10)
+            self.assertEqual(nl_solver._iter_count, 1)
+            assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-10)
 
     def test_direct_with_penalty(self):
         """Test that a bounded problem with a direct linear solver and
@@ -653,38 +540,16 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = True
 
-        p.set_val("u", 1.5)
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            p.model.linear_solver = lin_sol
+            p.setup()
+            p.set_val("u", 1.5)
+            p.run_model()
 
-        self.assertGreater(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), 1.0, 1e-2)
+            self.assertGreater(nl_solver._iter_count, 1)
+            assert_near_equal(p.get_val("u"), 1.0, 1e-2)
 
-    def test_blsq_with_penalty(self):
-        """Test that a bounded problem with a blsq linear solver and
-        the default line search will find the bounded solution.  In this test,
-        we use the default penalty value which should make the solver
-        take more than a single iteration to find the unbounded solution.
-        - Bounds: lower=1, upper=2
-        - LinearSolver: LinearBLSQ
-        - Linesearch: BoundsEnforceLS (Default)
-        """
-        p = create_problem(lambda x: x, (1,), lower=1, upper=2)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.LinearBLSQ(assemble_jac=True)
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["maxiter"] = 10
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = True
-
-        p.set_val("u", 1.5)
-        p.run_model()
-
-        self.assertGreater(nl_solver._iter_count, 1)
-        assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-2)
-
-    def test_set_lower_bound_be_linesearch(self):
+    def test_set_lower_bound_with_linesearch(self):
         """Test that the bounds are set correctly in each line search
         - Bounds: lower=1, upper=None
         - LinearSolver: DirectSolver
@@ -692,22 +557,25 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: x, (1,), lower=1.0)
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BoundsEnforceLS()
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["iprint"] = 1
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        p.set_val("u", 4.0)
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            for ls in ls_list:
+                p.model.linear_solver = lin_sol
+                nl_solver.linesearch = ls
+                p.setup()
+                p.set_val("u", 4.0)
+                p.run_model()
 
-        assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, 1.0)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, np.inf)
+                assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-12)
+                self.assertEqual(nl_solver.linesearch._lower_bounds, 1.0)
+                self.assertEqual(nl_solver.linesearch._upper_bounds, np.inf)
 
-    def test_set_upper_bound_be_linesearch(self):
+    def test_set_upper_bound_with_linesearch(self):
         """Test that the bounds are set correctly in each line search
         - Bounds: lower=None, upper=2.0
         - LinearSolver: DirectSolver
@@ -715,399 +583,127 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         """
         p = create_problem(lambda x: -x + 3, (1,), upper=2.0)
         nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BoundsEnforceLS()
 
         nl_solver.options["solve_subsystems"] = True
         nl_solver.options["iprint"] = 1
         nl_solver.options["pseudo_transient"] = False
         nl_solver.options["interior_penalty"] = False
 
-        p.set_val("u", 1.0)
-        p.run_model()
+        for lin_sol in lin_sol_list:
+            for ls in ls_list:
+                p.model.linear_solver = lin_sol
+                nl_solver.linesearch = ls
 
-        assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, -np.inf)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, 2.0)
+                p.setup()
+                p.set_val("u", 1.0)
+                p.run_model()
 
-    def test_set_lower_bound_ag_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=1, upper=None
-        - LinearSolver: DirectSolver
-        - Linesearch: ArmijoGoldsteinLS
-        """
-        p = create_problem(lambda x: x, (1,), lower=1.0)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.ArmijoGoldsteinLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 4.0)
-        p.run_model()
-
-        assert_near_equal(p.get_val("u"), 1.0)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, 1.0)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, np.inf)
-
-    def test_set_upper_bound_ag_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=None, upper=2.0
-        - LinearSolver: DirectSolver
-        - Linesearch: ArmijoGoldsteinLS
-        """
-        p = create_problem(lambda x: -x + 3, (1,), upper=2.0)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.ArmijoGoldsteinLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 1.0)
-        p.run_model()
-
-        assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, -np.inf)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, 2.0)
-
-    def test_set_lower_bound_ip_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=1, upper=None
-        - LinearSolver: DirectSolver
-        - Linesearch: InnerProductLS
-        """
-        p = create_problem(lambda x: x, (1,), lower=1.0)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.InnerProductLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 4.0)
-        p.run_model()
-
-        assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, 1.0)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, np.inf)
-
-    def test_set_upper_bound_ip_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=None, upper=2
-        - LinearSolver: DirectSolver
-        - Linesearch: InnerProductLS
-        """
-        p = create_problem(lambda x: -x + 3, (1,), upper=2.0)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.InnerProductLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 1.0)
-        p.run_model()
-
-        assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, -np.inf)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, 2.0)
-
-    def test_set_lower_bound_brk_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=1, upper=None
-        - LinearSolver: DirectSolver
-        - Linesearch: BracketingLS
-        """
-        p = create_problem(lambda x: x, (1,), lower=1.0)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 4.0)
-        p.run_model()
-
-        assert_near_equal(p.get_val("u"), 1.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, 1.0)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, np.inf)
-
-    def test_set_upper_bound_brk_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=None, upper=2
-        - LinearSolver: DirectSolver
-        - Linesearch: BracketingLS
-        """
-        p = create_problem(lambda x: -x + 3, (1,), upper=2.0)
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", 1.0)
-        p.run_model()
-
-        assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-13)
-        self.assertEqual(nl_solver.linesearch._lower_bounds, -np.inf)
-        self.assertEqual(nl_solver.linesearch._upper_bounds, 2.0)
+                assert_near_equal(p.get_val("u"), 2.0, tolerance=1e-12)
+                self.assertEqual(nl_solver.linesearch._lower_bounds, -np.inf)
+                self.assertEqual(nl_solver.linesearch._upper_bounds, 2.0)
 
 
 class TestIPNewtonBoundedVec(unittest.TestCase):
     def setUp(self):
         pass
 
-    def test_set_bounds_be_linesearch(self):
+    def test_set_bounds_with_linesearch(self):
         """Test that the bounds are set correctly in each line search
         - Bounds: lower=1, upper=5
         - LinearSolver: DirectSolver
         - Linesearch: BoundsEnforceLS
         """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BoundsEnforceLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
 
         lower_bounds = np.array([1.0, 1.0, -np.inf, -np.inf, 1.0])
         upper_bounds = np.array([5.0, np.inf, np.inf, np.inf, 5.0])
 
-        assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
-        assert_array_equal(nl_solver.linesearch._lower_bounds, nl_solver._lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, nl_solver._upper_bounds)
+        for lin_sol in lin_sol_list:
+            for ls in ls_list:
+                p = create_problem(
+                    lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
+                )
+                nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
 
-    def test_set_bounds_ag_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=1, upper=5
-        - LinearSolver: DirectSolver
-        - Linesearch: ArmijoGoldsteinLS
-        """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.ArmijoGoldsteinLS()
+                nl_solver.options["solve_subsystems"] = True
+                nl_solver.options["iprint"] = 1
+                nl_solver.options["pseudo_transient"] = False
+                nl_solver.options["interior_penalty"] = False
 
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
+                p.model.linear_solver = lin_sol
+                nl_solver.linesearch = ls
 
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
+                p.setup()
+                p.set_val("u", np.full(5, 4.0))
+                p.run_model()
 
-        lower_bounds = np.array([1.0, 1.0, -np.inf, -np.inf, 1.0])
-        upper_bounds = np.array([5.0, np.inf, np.inf, np.inf, 5.0])
+                assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
+                assert_array_equal(nl_solver.linesearch._lower_bounds, nl_solver._lower_bounds)
+                assert_array_equal(nl_solver.linesearch._upper_bounds, nl_solver._upper_bounds)
 
-        assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
-        assert_array_equal(nl_solver.linesearch._lower_bounds, nl_solver._lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, nl_solver._upper_bounds)
-
-    def test_set_bounds_ip_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=1, upper=5
-        - LinearSolver: DirectSolver
-        - Linesearch: InnerProductLS
-        """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.InnerProductLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
-
-        lower_bounds = np.array([1.0, 1.0, -np.inf, -np.inf, 1.0])
-        upper_bounds = np.array([5.0, np.inf, np.inf, np.inf, 5.0])
-
-        assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
-        assert_array_equal(nl_solver.linesearch._lower_bounds, nl_solver._lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, nl_solver._upper_bounds)
-
-    def test_set_bounds_brk_linesearch(self):
-        """Test that the bounds are set correctly in each line search
-        - Bounds: lower=1, upper=5
-        - LinearSolver: DirectSolver
-        - Linesearch: BracketingLS
-        """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
-
-        lower_bounds = np.array([1.0, 1.0, -np.inf, -np.inf, 1.0])
-        upper_bounds = np.array([5.0, np.inf, np.inf, np.inf, 5.0])
-
-        assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
-        assert_array_equal(nl_solver.linesearch._lower_bounds, nl_solver._lower_bounds)
-        assert_array_equal(nl_solver.linesearch._upper_bounds, nl_solver._upper_bounds)
-
-    def test_set_finite_mask_be_linesearch(self):
+    def test_set_finite_mask_with_linesearch(self):
         """Test that the finite masks on the bounds are set correctly in
         the line search
         - Bounds: lower=1, upper=5
         - LinearSolver: DirectSolver
         - Linesearch: BoundsEnforceLS
         """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BoundsEnforceLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
 
         lower_finite_mask = np.array([True, True, False, False, True])
         upper_finite_mask = np.array([True, False, False, False, True])
 
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, nl_solver._upper_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, nl_solver._lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, upper_finite_mask)
+        for lin_sol in lin_sol_list:
+            for ls in ls_list:
+                p = create_problem(
+                    lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
+                )
+                nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
 
-    def test_set_finite_mask_ag_linesearch(self):
-        """Test that the finite masks on the bounds are set correctly in
-        the line search
-        - Bounds: lower=1, upper=5
-        - LinearSolver: DirectSolver
-        - Linesearch: ArmijoGoldsteinLS
-        """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.ArmijoGoldsteinLS()
+                nl_solver.options["solve_subsystems"] = True
+                nl_solver.options["iprint"] = 1
+                nl_solver.options["pseudo_transient"] = False
+                nl_solver.options["interior_penalty"] = False
 
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
+                p.model.linear_solver = lin_sol
+                nl_solver.linesearch = ls
 
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
+                p.setup()
+                p.set_val("u", np.full(5, 4.0))
+                p.run_model()
 
-        lower_finite_mask = np.array([True, True, False, False, True])
-        upper_finite_mask = np.array([True, False, False, False, True])
+                assert_array_equal(nl_solver.linesearch._upper_finite_mask, nl_solver._upper_finite_mask)
+                assert_array_equal(nl_solver.linesearch._lower_finite_mask, nl_solver._lower_finite_mask)
+                assert_array_equal(nl_solver.linesearch._lower_finite_mask, lower_finite_mask)
+                assert_array_equal(nl_solver.linesearch._upper_finite_mask, upper_finite_mask)
 
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, nl_solver._upper_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, nl_solver._lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, upper_finite_mask)
+    def test_set_bounds_multiple_outputs(self):
+        lower_bounds = np.array([-np.inf, -1.0, -np.inf, -2.0])
+        upper_bounds = np.array([np.inf, np.inf, -3.0, 3.0])
 
-    def test_set_finite_mask_ip_linesearch(self):
-        """Test that the finite masks on the bounds are set correctly in
-        the line search
-        - Bounds: lower=1, upper=5
-        - LinearSolver: DirectSolver
-        - Linesearch: InnerProductLS
-        """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.InnerProductLS()
+        for ls in ls_list:
+            for lin_sol in lin_sol_list:
+                p = om.Problem()
+                p.model.add_subsystem("mult", MultOutComp(), promotes=["*"])
+                nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=0, solve_subsystems=True)
+                p.model.linear_solver = lin_sol
+                nl_solver.linesearch = ls
+                p.setup()
 
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
+                p.set_val("u1", val=-1.0)
+                p.set_val("u2", val=-0.3)
+                p.set_val("u3", val=-10.0)
+                p.set_val("u4", val=1.0)
 
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
+                p.run_model()
 
-        lower_finite_mask = np.array([True, True, False, False, True])
-        upper_finite_mask = np.array([True, False, False, False, True])
+                assert_array_equal(nl_solver._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver._upper_bounds, upper_bounds)
+                assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
 
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, nl_solver._upper_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, nl_solver._lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, upper_finite_mask)
-
-    def test_set_finite_mask_brk_linesearch(self):
-        """Test that the finite masks on the bounds are set correctly in
-        the line search
-        - Bounds: lower=1, upper=5
-        - LinearSolver: DirectSolver
-        - Linesearch: BracketingLS
-        """
-        p = create_problem(
-            lambda x: x, (5,), lower=np.array([1, 1, None, None, 1]), upper=np.array([5, None, None, None, 5])
-        )
-        nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver()
-        p.model.linear_solver = om.DirectSolver(assemble_jac=True)
-        nl_solver.linesearch = om.BracketingLS()
-
-        nl_solver.options["solve_subsystems"] = True
-        nl_solver.options["iprint"] = 1
-        nl_solver.options["pseudo_transient"] = False
-        nl_solver.options["interior_penalty"] = False
-
-        p.set_val("u", np.full(5, 4.0))
-        p.run_model()
-
-        lower_finite_mask = np.array([True, True, False, False, True])
-        upper_finite_mask = np.array([True, False, False, False, True])
-
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, nl_solver._upper_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, nl_solver._lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._lower_finite_mask, lower_finite_mask)
-        assert_array_equal(nl_solver.linesearch._upper_finite_mask, upper_finite_mask)
+                if isinstance(lin_sol, om.LinearBLSQ):
+                    assert_array_equal(nl_solver.linear_solver.lower_bounds, lower_bounds)
+                    assert_array_equal(nl_solver.linear_solver.upper_bounds, upper_bounds)
 
 
 if __name__ == "__main__":

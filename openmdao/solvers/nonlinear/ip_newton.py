@@ -63,6 +63,9 @@ class IPNewtonSolver(BoundedNonlinearSolver):
         self._state_cache = None
         self._du_cache = None
 
+        # Store the r0 cache
+        self._r0 = None
+
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
@@ -271,6 +274,9 @@ class IPNewtonSolver(BoundedNonlinearSolver):
 
         self._run_apply()
         norm = self._iter_get_norm()
+        self._r0 = system._residuals.asarray()
+        if self.linesearch is not None:
+            self.linesearch._r0 = self._r0
 
         norm0 = norm if norm != 0.0 else 1.0
 
@@ -326,6 +332,7 @@ class IPNewtonSolver(BoundedNonlinearSolver):
 
         # Get the states and find the length of the state vector
         u = system._outputs.asarray()
+        r = system._residuals.asarray()
         dp_du_arr = np.zeros(len(u))
 
         # We want to add the penalty terms to the diagonal of the
@@ -340,10 +347,18 @@ class IPNewtonSolver(BoundedNonlinearSolver):
         t_upper = self._upper_bounds[self._upper_finite_mask] - u[self._upper_finite_mask]
 
         if t_lower.size > 0:
-            dp_du_arr[self._lower_finite_mask] -= self._mu_lower / (t_lower + 1e-10)
+            dp_du_arr[self._lower_finite_mask] -= (
+                (r[self._lower_finite_mask] / np.abs(self._r0[self._lower_finite_mask]))
+                * self._mu_lower
+                / (t_lower + 1e-10)
+            )
 
         if t_upper.size > 0:
-            dp_du_arr[self._upper_finite_mask] -= self._mu_upper / (t_upper + 1e-10)
+            dp_du_arr[self._upper_finite_mask] += (
+                (r[self._upper_finite_mask] / np.abs(self._r0[self._upper_finite_mask]))
+                * self._mu_upper
+                / (t_upper + 1e-10)
+            )
 
         if isinstance(mtx, csc_matrix):  # Need to check for a sparse matrix
             mtx += diags(dp_du_arr, 0, format="csc")

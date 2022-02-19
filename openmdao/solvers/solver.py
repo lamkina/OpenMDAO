@@ -917,6 +917,7 @@ class LinesearchSolver(NonlinearSolver):
         self._upper_finite_mask = None
         self._mu_upper = None
         self._mu_lower = None
+        self._r0 = None
 
     def _declare_options(self):
         """

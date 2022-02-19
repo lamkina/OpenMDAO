@@ -50,11 +50,13 @@ jobs:
           pip install .
 
       - name: Run BracketingLS tests
+        continue-on-error: true
         shell: bash -l {0}
         run: |
           pytest openmdao/solvers/linesearch/tests/test_bracketing.py
 
       - name: Run IPNewton tests
+        continue-on-error: true
         shell: bash -l {0}
         run: |
           pytest openmdao/solvers/nonlinear/tests/test_ipnewt.py

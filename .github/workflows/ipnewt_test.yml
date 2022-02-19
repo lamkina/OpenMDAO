@@ -1,0 +1,66 @@
+# Run IPNewt Tests
+name: IPNewt Tests
+
+on:
+  # Trigger on push or pull request events for the ipnewt branch
+  push:
+    branches: [ ipnewt ]
+  pull_request:
+    branches: [ ipnewt ]
+
+jobs:
+
+  ubuntu_tests:
+    runs-on: ubuntu-20.04
+
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+
+    name: Ubuntu ${{ matrix.NAME }}
+
+    steps:
+      - name: Display run details
+        run: |
+          echo "============================================================="
+          echo "Run #${GITHUB_RUN_NUMBER}"
+          echo "Run ID: ${GITHUB_RUN_ID}"
+          echo "Testing: ${GITHUB_REPOSITORY}"
+          echo "Triggered by: ${GITHUB_EVENT_NAME}"
+          echo "Initiated by: ${GITHUB_ACTOR}"
+          echo "============================================================="
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install OpenMDAO
+        shell: bash -l {0}
+        run: |
+          pip install numpy
+
+          echo "============================================================="
+          echo "Install SciPy from Eytan's GitHub branch"
+          echo "============================================================="
+          pip install git+https://github.com/eytanadler/scipy.git@update_lsq_linear
+
+          echo "============================================================="
+          echo "Install OpenMDAO"
+          echo "============================================================="
+          pip install .[test]
+
+      - name: Run tests
+        shell: bash -l {0}
+        run: |
+          ls
+          cd OpenMDAO/openmdao/solvers
+
+          echo "============================================================="
+          echo "Run BracketingLS tests"
+          echo "============================================================="
+          pytest linesearch/tests/test_backtracking.py
+
+          echo "============================================================="
+          echo "Run IPNewton tests"
+          echo "============================================================="
+          pytest nonlinear/tests/test_ipnewt.py

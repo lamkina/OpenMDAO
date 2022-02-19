@@ -35,14 +35,15 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Install OpenMDAO
+        id: install_openmdao
         shell: bash -l {0}
         run: |
-          pip install numpy pytest
+          pip install numpy scipy pytest
 
           echo "============================================================="
           echo "Install SciPy from Eytan's GitHub branch"
           echo "============================================================="
-          pip install git+https://github.com/eytanadler/scipy.git@update_lsq_linear
+          # pip install git+https://github.com/eytanadler/scipy.git@update_lsq_linear
 
           echo "============================================================="
           echo "Install OpenMDAO"
@@ -50,18 +51,19 @@ jobs:
           pip install .
 
       - name: Run BracketingLS tests
-        continue-on-error: true
+        if: ${{ steps.install_openmdao.outcome == 'success' }}
         shell: bash -l {0}
         run: |
           pytest openmdao/solvers/linesearch/tests/test_bracketing.py
 
       - name: Run IPNewton tests
-        continue-on-error: true
+        if: ${{ steps.install_openmdao.outcome == 'success' }}
         shell: bash -l {0}
         run: |
           pytest openmdao/solvers/nonlinear/tests/test_ipnewt.py
       
       - name: Run all OpenMDAO solver tests
+        if: ${{ steps.install_openmdao.outcome == 'success' }}
         shell: bash -l {0}
         run: |
           pytest openmdao/solvers/

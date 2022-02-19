@@ -345,7 +345,7 @@ class TestBracketingParabola(unittest.TestCase):
         Should find the solution on the first SPI iteration.
         """
         p = create_problem(lambda x: x**2, (1,),
-                           spi_tol=1e-6, beta=3)
+                           spi_tol=1e-6, beta=4)
         p.set_val('u', val=-1.)
         p.run_model()
 
@@ -561,6 +561,20 @@ class TestBracketingBack(unittest.TestCase):
         p.set_val('u', val=-0.24)
         p.run_model()
         assert_near_equal(p.get_val('u'), 0., tolerance=1e-6)
+
+class TestBracketingHighCurvature(unittest.TestCase):
+    def test_high_curvature(self):
+        """
+        r = -u - 0.1 log(-2 - x)
+
+        This function has high curvature (basically a log barrier
+        with a low mu) to test the convergence on a sharp problem.
+        """
+        p = create_problem(lambda x: -x - 0.01 * np.log(-2 - x), (1,),
+                           upper=-2, maxiter=10000, spi_tol=1e-8, beta=2)
+        p.set_val('u', val=-2.2)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -2.01, tolerance=1e-4)
 
 # TODO: figure out a way to test the penalty
 

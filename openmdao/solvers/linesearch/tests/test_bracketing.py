@@ -728,9 +728,112 @@ class TestBracketingPenalty(unittest.TestCase):
         p.run_model()
         assert_near_equal(p.get_val('u'), 2., tolerance=1e-3)
 
-# TODO: check error checking? For example, what happens if the line search starts in the infeasible region? How to get it to search uphill just in case?
+class TestBracketingRegression(unittest.TestCase):
+    """
+    A few more complicated regression tests to catch any multi-dimensional
+    nuances that may not have been caught in previous simpler tests.
+    """
+    def test_five_D_bounded_with_penalty(self):
+        lower = np.array([-1., -5., 1., -3., 2.])
+        upper = np.array([0., -3., 10., 5., 2.1])
+        def func(x):
+            if np.any(x <= lower):
+                raise ValueError(f"Lower bound of {lower} violated by input of {x}")
+            if np.any(x >= upper):
+                raise ValueError(f"Upper bound of {upper} violated by input of {x}")
+            return np.array([
+                np.sin(x[1]) + x[0]**2 * x[2] + 1/x[3] - 1/x[4],
+                x[0] + x[3]**2,
+                x[4] * np.exp(x[1]/x[0]),
+                x[0] + 3*x[1] - x[2] + x[3]*x[4],
+                x[4] / x[3] - x[0] - 5
+            ])
 
-# TODO: add multidimensional penalty regression test to ensure penalty works on a case in a bunch of dimensions with various bounds
+        p = om.Problem()
+        p.model.add_subsystem('comp',
+                              create_comp(func, (5,), lower=lower, upper=upper)(),
+                              promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=1., solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u', val=np.array([-0.9, -3.1, 5., 0.1, 2.0001]))
+        p.run_model()
+        assert_near_equal(p.get_val('u'), np.array([-0.97199227, -3.12976849, 1.27969818, 0.11538653, 2.00018035]), tolerance=1e-7)
+
+    def test_four_D_semibounded_with_penalty(self):
+        lower = np.array([-np.inf, -5., -np.inf, -3.])
+        upper = np.array([np.inf, -3., 10., np.inf])
+        def func(x):
+            if np.any(x <= lower):
+                raise ValueError(f"Lower bound of {lower} violated by input of {x}")
+            if np.any(x >= upper):
+                raise ValueError(f"Upper bound of {upper} violated by input of {x}")
+            return np.array([
+                np.sin(x[1]) + x[0]**2 * x[2] + 1/x[3] - 1/x[1],
+                x[0] - x[3]**2,
+                x[2] * np.exp(x[1]/x[0]),
+                x[0] + 3*x[1] - x[2] + x[3],
+            ])
+
+        p = om.Problem()
+        p.model.add_subsystem('comp',
+                              create_comp(func, (4,), lower=lower, upper=upper)(),
+                              promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=1., solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u', val=np.array([-0.9, -3.1, 5., 0.1]))
+        p.run_model()
+        assert_near_equal(p.get_val('u'), np.array([-0.59887255, -3.12553959, -3.84553647, 0.08740148]), tolerance=1e-6)
+    
+    def test_multi_state_comp_semibounded(self):
+        class Comp(om.ImplicitComponent):
+            def setup(self):
+                self.add_output('u1')
+                self.add_output('u2', lower=-1.)
+                self.add_output('u3', upper=-3.)
+                self.add_output('u4', lower=-2., upper=3.)
+            def setup_partials(self):
+                self.declare_partials(of=['*'], wrt=['*'], method='cs')
+            def apply_nonlinear(self, inputs, outputs, residuals):
+                if outputs['u2'] <= -1.:
+                    raise ValueError(f"Lower bound of -1 on state u2 violated by value of {outputs['u2']}")
+                if outputs['u3'] >= -3.:
+                    raise ValueError(f"Upper bound of -3 on state u3 violated by value of {outputs['u3']}")
+                if outputs['u4'] <= -2.:
+                    raise ValueError(f"Lower bound of -2 on state u4 violated by value of {outputs['u4']}")
+                if outputs['u4'] >= 3.:
+                    raise ValueError(f"Upper bound of 3 on state u4 violated by value of {outputs['u4']}")
+                residuals['u1'] = outputs['u1'] * outputs['u2']
+                residuals['u2'] = np.cos(outputs['u3']) * np.exp(outputs['u4']) - outputs['u1']
+                residuals['u3'] = -outputs['u3']
+                residuals['u4'] = 1 / outputs['u3']
+
+        p = om.Problem()
+        p.model.add_subsystem('comp', Comp(), promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=0.1, solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u1', val=-1.)
+        p.set_val('u2', val=-0.3)
+        p.set_val('u3', val=-10.)
+        p.set_val('u4', val=1.)
+        p.run_model()
+        assert_near_equal(p.get_val('u1'), 1.56992041, tolerance=1e-6)
+        assert_near_equal(p.get_val('u2'), -1., tolerance=1e-6)
+        assert_near_equal(p.get_val('u3'), -7.59984122, tolerance=1e-6)
+        assert_near_equal(p.get_val('u4'), -1.85961775, tolerance=1e-6)
+
+# TODO: check error checking? For example, what happens if the line search starts in the infeasible region? How to get it to search uphill just in case?
 
 if __name__ == "__main__":
     unittest.main()

@@ -52,9 +52,14 @@ jobs:
       - name: Run BracketingLS tests
         shell: bash -l {0}
         run: |
-          pytest openmdao/solvers/linesearch/tests/test_backtracking.py
+          pytest openmdao/solvers/linesearch/tests/test_bracketing.py
 
       - name: Run IPNewton tests
         shell: bash -l {0}
         run: |
           pytest openmdao/solvers/nonlinear/tests/test_ipnewt.py
+      
+      - name: Run all OpenMDAO solver tests
+        shell: bash -l {0}
+        run: |
+          pytest openmdao/solvers/

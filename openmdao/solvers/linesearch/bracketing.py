@@ -90,12 +90,12 @@ class BracketingLS(LinesearchSolver):
                 t_upper = ub[ub_mask] - u[ub_mask]
 
                 if t_lower.size > 0:
-                    penalty[lb_mask] += np.sum(self._mu_lower * -np.log(t_lower + 1e-10))
+                    penalty[lb_mask] += self._mu_lower * -np.log(t_lower + 1e-10)
 
                 if t_upper.size > 0:
-                    penalty[ub_mask] += np.sum(self._mu_upper * -np.log(t_upper + 1e-10))
+                    penalty[ub_mask] += self._mu_upper * -np.log(t_upper + 1e-10)
 
-                return np.linalg.norm(resids + penalty)
+                return np.linalg.norm(resids + resids / np.abs(resids) * penalty)
 
         # Compute the unpenalized residual norm
         return self._iter_get_norm()
@@ -114,7 +114,7 @@ class BracketingLS(LinesearchSolver):
         system = self._system()
         self.alpha = self.options["alpha"]
         self.alpha_max = self.options["alpha_max"]
-        buffer = 1e-13  # Buffer by which to pull alpha max away from the bound (absolute magnitude in states)
+        buffer = 1e-12  # Buffer by which to pull alpha max away from the bound
 
         u = system._outputs
         du = system._vectors["output"]["linear"]
@@ -166,7 +166,7 @@ class BracketingLS(LinesearchSolver):
         # line search exactly to the bound.
         if d_alpha >= 0:
             self.alpha_max *= 1 - d_alpha
-            self.alpha_max -= buffer / np.linalg.norm(du.asarray())
+            self.alpha_max -= buffer
 
         # Move the states back
         u.add_scal_vec(-self.options["alpha_max"], du)

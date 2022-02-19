@@ -576,11 +576,161 @@ class TestBracketingHighCurvature(unittest.TestCase):
         p.run_model()
         assert_near_equal(p.get_val('u'), -2.01, tolerance=1e-4)
 
-# TODO: figure out a way to test the penalty
+class TestBracketingMultDim(unittest.TestCase):
+    """
+    Test the line search on multidimensional problems.
+    """
+    def test_unbounded_paraboloid(self):
+        """
+        Test that it converges to the solution of an
+        unbounded parabola in 3D in three iterations.
+        """
+        p = create_problem(lambda x: np.array([ 4*x[0]**2, 3*x[1]**2, x[2]**2 ]),
+                           (3,), maxiter=10, spi_tol=1e-6, beta=3.5)
+        p.set_val('u', val=np.array([-1, -0.5, 2.]))
+        p.run_model()
+        assert_near_equal(p.get_val('u'), np.zeros(3), tolerance=1e-14)
+        self.assertEqual(p.model.nonlinear_solver.linesearch._iter_count, 3)
 
-# TODO: test that the norm objective computation works correctly with multi-D functions
+    def test_upper_bounded_paraboloid(self):
+        """
+        Test that it converges to the upper bound
+        with a bounded parabola in 2D.
+        """
+        p = create_problem(lambda x: np.array([ 4*x[0]**2, 3*x[1]**2 ]),
+                           (2,), upper=np.array([-0.7, -0.5]), maxiter=10,
+                           spi_tol=1e-6, beta=3.5)
+        p.set_val('u', val=np.array([-1, -1]))
+        p.run_model()
+        assert_near_equal(p.get_val('u'), np.array([-0.7, -0.7]), tolerance=1e-10)
+
+    def test_lower_bounded_paraboloid(self):
+        """
+        Test that it converges to the lower bound
+        with a bounded parabola in 2D.
+        """
+        p = create_problem(lambda x: np.array([ 4*x[0]**2, 3*x[1]**2 ]),
+                           (2,), lower=np.array([0.5, 0.7]), maxiter=10,
+                           spi_tol=1e-6, beta=3.5)
+        p.set_val('u', val=np.array([1, 1]))
+        p.run_model()
+        assert_near_equal(p.get_val('u'), np.array([0.7, 0.7]), tolerance=1e-10)
+
+class TestBracketingPenalty(unittest.TestCase):
+    """
+    Test the penalty function implementation.
+    """
+    def test_simple_upper(self):
+        """
+        Upper bound on a r = -u at u = -1. Should
+        converge to the penalized minimum
+        (not the bound).
+        """
+        upper = -1.
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return -x
+
+        p = om.Problem()
+        p.model.add_subsystem('comp',
+                              create_comp(func, (1,), upper=upper)(),
+                              promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=1., solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u', val=-10.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -2., tolerance=1e-3)
+    
+    def test_simple_lower(self):
+        """
+        Lower bound on a r = u at u = 1. Should
+        converge to the penalized minimum
+        (not the bound).
+        """
+        lower = 1.
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return x
+
+        p = om.Problem()
+        p.model.add_subsystem('comp',
+                              create_comp(func, (1,), lower=lower)(),
+                              promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=1., solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u', val=10.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 2., tolerance=1e-3)
+    
+    def test_simple_upper_negative(self):
+        """
+        Upper bound on a r = u at u = -1, so now the residuals
+        will be negative (objective should be unchanged
+        from test_simple_upper test case). Should
+        converge to the penalized minimum
+        (not the bound).
+        """
+        upper = -1.
+        def func(x):
+            if x >= upper:
+                raise ValueError(f"Upper bound of {upper} violated by input of {x[0]}")
+            return x
+
+        p = om.Problem()
+        p.model.add_subsystem('comp',
+                              create_comp(func, (1,), upper=upper)(),
+                              promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=1., solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u', val=-10.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), -2., tolerance=1e-3)
+    
+    def test_simple_lower_negative(self):
+        """
+        Lower bound on a r = -u at u = 1, so now the residuals
+        will be negative (objective should be unchanged
+        from test_simple_lower test case). Should
+        converge to the penalized minimum
+        (not the bound).
+        """
+        lower = 1.
+        def func(x):
+            if x <= lower:
+                raise ValueError(f"Lower bound of {lower} violated by input of {x[0]}")
+            return -x
+
+        p = om.Problem()
+        p.model.add_subsystem('comp',
+                              create_comp(func, (1,), lower=lower)(),
+                              promotes=['*'])
+        p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=1, iprint=2, interior_penalty=True,
+                                                     mu=1., solve_subsystems=True)
+        p.model.linear_solver = om.DirectSolver()
+        p.model.nonlinear_solver.linesearch = om.BracketingLS(iprint=2, maxiter=500, spi_tol=1e-6)
+        p.setup()
+        
+        p.set_val('u', val=10.)
+        p.run_model()
+        assert_near_equal(p.get_val('u'), 2., tolerance=1e-3)
 
 # TODO: check error checking? For example, what happens if the line search starts in the infeasible region? How to get it to search uphill just in case?
+
+# TODO: add multidimensional penalty regression test to ensure penalty works on a case in a bunch of dimensions with various bounds
 
 if __name__ == "__main__":
     unittest.main()

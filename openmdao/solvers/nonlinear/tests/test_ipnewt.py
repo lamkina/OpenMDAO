@@ -8,8 +8,8 @@ import openmdao.api as om
 from openmdao.utils.assert_utils import assert_near_equal
 from numpy.testing import assert_array_equal
 
-ls_list = [om.BoundsEnforceLS(), om.ArmijoGoldsteinLS(), om.InnerProductLS(), om.BracketingLS()]
-lin_sol_list = [om.DirectSolver(assemble_jac=True), om.LinearBLSQ(assemble_jac=True)]
+ls_list = [om.BoundsEnforceLS, om.ArmijoGoldsteinLS, om.InnerProductLS, om.BracketingLS]
+lin_sol_list = [om.DirectSolver, om.LinearBLSQ]
 
 
 class MultOutComp(om.ImplicitComponent):
@@ -143,7 +143,7 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
 
             p.setup()
 
@@ -171,7 +171,7 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["tau"] = 0.5
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
 
             p.setup()
 
@@ -201,7 +201,7 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["tau"] = 0.5
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
 
             p.setup()
 
@@ -229,7 +229,7 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
 
         for ls in ls_list:
-            nl_solver.linesearch = ls
+            nl_solver.linesearch = ls()
             p.setup()
             p.set_val("u", 4.0)
             p.run_model()
@@ -254,7 +254,7 @@ class TestIPNewtonUnboundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
 
         for ls in ls_list:
-            nl_solver.linesearch = ls
+            nl_solver.linesearch = ls()
             p.setup()
             p.set_val("u", 4.0)
             p.run_model()
@@ -284,7 +284,7 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
             p.setup()
 
             p.set_val("u", 4.0)
@@ -310,7 +310,7 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
 
         for ls in ls_list:
-            nl_solver.linesearch = ls
+            nl_solver.linesearch = ls()
 
             p.setup()
             p.set_val("u", 4.0)
@@ -336,7 +336,7 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["interior_penalty"] = False
 
         for ls in ls_list:
-            nl_solver.linesearch = ls
+            nl_solver.linesearch = ls()
 
             p.setup()
             p.set_val("u", 4.0)
@@ -357,7 +357,7 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["tau"] = 5.0
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
             p.setup()
             p.set_val("u", np.full(5, 4))
             p.run_model()
@@ -377,9 +377,9 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
 
         for lin_sol in lin_sol_list:
             for ls in ls_list:
-                p.model.linear_solver = lin_sol
+                p.model.linear_solver = lin_sol(assemble_jac=True)
 
-                nl_solver.linesearch = ls
+                nl_solver.linesearch = ls()
                 if isinstance(ls, om.BracketingLS):
                     nl_solver.linesearch.options["spi_tol"] = 1e-15
                     nl_solver.linesearch.options["maxiter"] = 50
@@ -406,7 +406,7 @@ class TestIPNewtonUnboundedVec(unittest.TestCase):
         nl_solver.options["interior_penalty"] = True
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
             p.setup()
             p.set_val("u", np.full(5, 4))
             p.run_model()
@@ -487,7 +487,7 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
             p.setup()
             p.set_val("u", 1.5)
 
@@ -514,7 +514,7 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["pseudo_transient"] = False
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
             p.setup()
             p.set_val("u", 1.5)
 
@@ -542,7 +542,7 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
         nl_solver.options["interior_penalty"] = True
 
         for lin_sol in lin_sol_list:
-            p.model.linear_solver = lin_sol
+            p.model.linear_solver = lin_sol(assemble_jac=True)
             p.setup()
             p.set_val("u", 1.5)
             p.run_model()
@@ -566,8 +566,8 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
 
         for lin_sol in lin_sol_list:
             for ls in ls_list:
-                p.model.linear_solver = lin_sol
-                nl_solver.linesearch = ls
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
                 p.setup()
                 p.set_val("u", 4.0)
                 p.run_model()
@@ -592,8 +592,8 @@ class TestIPNewtonBoundedScalar(unittest.TestCase):
 
         for lin_sol in lin_sol_list:
             for ls in ls_list:
-                p.model.linear_solver = lin_sol
-                nl_solver.linesearch = ls
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
 
                 p.setup()
                 p.set_val("u", 1.0)
@@ -630,8 +630,8 @@ class TestIPNewtonBoundedVec(unittest.TestCase):
                 nl_solver.options["pseudo_transient"] = False
                 nl_solver.options["interior_penalty"] = False
 
-                p.model.linear_solver = lin_sol
-                nl_solver.linesearch = ls
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
 
                 p.setup()
                 p.set_val("u", np.full(5, 4.0))
@@ -665,8 +665,8 @@ class TestIPNewtonBoundedVec(unittest.TestCase):
                 nl_solver.options["pseudo_transient"] = False
                 nl_solver.options["interior_penalty"] = False
 
-                p.model.linear_solver = lin_sol
-                nl_solver.linesearch = ls
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
 
                 p.setup()
                 p.set_val("u", np.full(5, 4.0))
@@ -686,8 +686,8 @@ class TestIPNewtonBoundedVec(unittest.TestCase):
                 p = om.Problem()
                 p.model.add_subsystem("mult", MultOutComp(), promotes=["*"])
                 nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=0, solve_subsystems=True)
-                p.model.linear_solver = lin_sol
-                nl_solver.linesearch = ls
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
                 p.setup()
 
                 p.set_val("u1", val=-1.0)

@@ -195,16 +195,18 @@ class BracketingLS(LinesearchSolver):
 
         # TODO: Record this iteration
 
-        # If phi at the first alpha is greater than the original point,
-        # we assume there's a minimum between alpha of 0 and the current
-        # point.
-        if self.bracket_high["phi"] >= self.bracket_low["phi"]:
-            return bak
+        # Only continue searching if allowed more iterations
+        if self._iter_count < self.options["maxiter"]:
+            # If phi at the first alpha is greater than the original point,
+            # we assume there's a minimum between alpha of 0 and the current
+            # point.
+            if self.bracket_high["phi"] >= self.bracket_low["phi"]:
+                return bak
 
-        # If phi is less that the original phi and it's not on a bound,
-        # we want to continue the search forward.
-        if not bounds_enforced:
-            return fwd
+            # If phi is less that the original phi and it's not on a bound,
+            # we want to continue the search forward.
+            if not bounds_enforced:
+                return fwd
 
         # Otherwise, report that the line search is on a bound and no
         # more bracketing operations can be done.

@@ -833,7 +833,17 @@ class TestBracketingRegression(unittest.TestCase):
         assert_near_equal(p.get_val('u3'), -7.59984122, tolerance=1e-6)
         assert_near_equal(p.get_val('u4'), -1.85961775, tolerance=1e-6)
 
-# TODO: check error checking? For example, what happens if the line search starts in the infeasible region? How to get it to search uphill just in case?
+class TestBracketingErrorAndOptionsChecking(unittest.TestCase):
+    def test_maxiter(self):
+        """
+        Test that maxiter stops at the right iteration number.
+        """
+        for iters in range(1, 7):
+            p = create_problem(lambda x: -x - 0.01 * np.log(-2 - x), (1,),
+                            upper=-2, maxiter=iters, spi_tol=1e-8, beta=2)
+            p.set_val('u', val=-2.2)
+            p.run_model()
+            self.assertEqual(p.model.nonlinear_solver.linesearch._iter_count, iters)
 
 if __name__ == "__main__":
     unittest.main()

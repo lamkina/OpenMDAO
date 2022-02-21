@@ -13,6 +13,8 @@ from openmdao.utils.mpi import MPI
 from openmdao.utils.om_warnings import issue_warning, SolverWarning
 from openmdao.solvers.linear.linear_blsq import LinearBLSQ
 
+# TODO: Should we add some sort of protection to prevent the solver from starting outside the bounds? (EJA)
+# TODO: Add the ability to print out active bounds toward end of solve (like BoundsEnforceLS)? (EJA)
 
 class IPNewtonSolver(BoundedNonlinearSolver):
     """

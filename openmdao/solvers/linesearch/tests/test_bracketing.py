@@ -790,7 +790,7 @@ class TestBracketingRegression(unittest.TestCase):
         
         p.set_val('u', val=np.array([-0.9, -3.1, 5., 0.1]))
         p.run_model()
-        assert_near_equal(p.get_val('u'), np.array([-0.59887255, -3.12553959, -3.84553647, 0.08740148]), tolerance=1e-6)
+        assert_near_equal(p.get_val('u'), np.array([-0.73079907, -3.11435048, 0.02976901, 0.092921]), tolerance=1e-6)
     
     def test_multi_state_comp_semibounded(self):
         class Comp(om.ImplicitComponent):

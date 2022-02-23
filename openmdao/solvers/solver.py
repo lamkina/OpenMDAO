@@ -798,11 +798,6 @@ class BoundedNonlinearSolver(NonlinearSolver):
         self._lower_finite_mask = None
         self._upper_finite_mask = None
 
-        # All of the bounded solvers compute a step direction and
-        # therefor may have a line search or linear solver.
-        self.linesearch = None
-        self.linear_solver = None
-
     def _set_bounds(self, system):
         # TODO: write docstring
         # TODO: add comments that explain what this is doing
@@ -926,7 +921,7 @@ class LinesearchSolver(NonlinearSolver):
         opt = self.options
         opt.declare(
             "bound_enforcement",
-            default="vector",
+            default="scalar",
             values=["vector", "scalar", "wall"],
             desc="If this is set to 'vector', the entire vector is backtracked together "
             + "when a bound is violated. If this is set to 'scalar', only the violating "

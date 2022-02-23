@@ -294,6 +294,8 @@ class ArmijoGoldsteinLS(LinesearchSolver):
         """
         super()._declare_options()
         opt = self.options
+        opt["maxiter"] = 5
+
         opt.declare(
             "c",
             default=0.1,
@@ -304,6 +306,7 @@ class ArmijoGoldsteinLS(LinesearchSolver):
             "terminate the line search.",
         )
         opt.declare("rho", default=0.5, lower=0.0, upper=1.0, desc="Contraction factor.")
+        opt.declare("alpha", default=1.0, lower=0.0, desc="Initial line search step.")
         opt.declare("retry_on_analysis_error", default=True, desc="Backtrack and retry if an AnalysisError is raised.")
         opt.declare(
             "method", default="Armijo", values=["Armijo", "Goldstein"], desc="Method to calculate stopping condition."

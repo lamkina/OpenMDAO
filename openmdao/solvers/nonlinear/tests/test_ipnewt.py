@@ -12,12 +12,46 @@ ls_list = [om.BoundsEnforceLS, om.ArmijoGoldsteinLS, om.InnerProductLS, om.Brack
 lin_sol_list = [om.DirectSolver, om.LinearBLSQ]
 
 
-class MultOutComp(om.ImplicitComponent):
+class MultOutComp1(om.ImplicitComponent):
     def setup(self):
         self.add_output("u1")
         self.add_output("u2", lower=-1.0)
         self.add_output("u3", upper=-3.0)
         self.add_output("u4", lower=-2.0, upper=3.0)
+
+    def setup_partials(self):
+        self.declare_partials(of=["*"], wrt=["*"], method="cs")
+
+    def apply_nonlinear(self, inputs, outputs, residuals):
+        residuals["u1"] = outputs["u1"] * outputs["u2"]
+        residuals["u2"] = np.cos(outputs["u3"]) * np.exp(outputs["u4"]) - outputs["u1"]
+        residuals["u3"] = -outputs["u3"]
+        residuals["u4"] = 1 / outputs["u3"]
+
+
+class MultOutComp2(om.ImplicitComponent):
+    def setup(self):
+        self.add_output("u1", lower=0.0)
+        self.add_output("u2", lower=-1.0)
+        self.add_output("u3", lower=-3.0)
+        self.add_output("u4", lower=-2.0)
+
+    def setup_partials(self):
+        self.declare_partials(of=["*"], wrt=["*"], method="cs")
+
+    def apply_nonlinear(self, inputs, outputs, residuals):
+        residuals["u1"] = outputs["u1"] * outputs["u2"]
+        residuals["u2"] = np.cos(outputs["u3"]) * np.exp(outputs["u4"]) - outputs["u1"]
+        residuals["u3"] = -outputs["u3"]
+        residuals["u4"] = 1 / outputs["u3"]
+
+
+class MultOutComp3(om.ImplicitComponent):
+    def setup(self):
+        self.add_output("u1", upper=10.0)
+        self.add_output("u2", upper=5.0)
+        self.add_output("u3", upper=-3.0)
+        self.add_output("u4", upper=3.0)
 
     def setup_partials(self):
         self.declare_partials(of=["*"], wrt=["*"], method="cs")
@@ -678,14 +712,72 @@ class TestIPNewtonBoundedVec(unittest.TestCase):
                 assert_array_equal(nl_solver.linesearch._lower_finite_mask, lower_finite_mask)
                 assert_array_equal(nl_solver.linesearch._upper_finite_mask, upper_finite_mask)
 
-    def test_set_bounds_multiple_outputs(self):
+    def test_set_bounds_multiple_outputs_case_1(self):
         lower_bounds = np.array([-np.inf, -1.0, -np.inf, -2.0])
         upper_bounds = np.array([np.inf, np.inf, -3.0, 3.0])
 
         for ls in ls_list:
             for lin_sol in lin_sol_list:
                 p = om.Problem()
-                p.model.add_subsystem("mult", MultOutComp(), promotes=["*"])
+                p.model.add_subsystem("mult", MultOutComp1(), promotes=["*"])
+                nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=0, solve_subsystems=True)
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
+                p.setup()
+
+                p.set_val("u1", val=-1.0)
+                p.set_val("u2", val=-0.3)
+                p.set_val("u3", val=-10.0)
+                p.set_val("u4", val=1.0)
+
+                p.run_model()
+
+                assert_array_equal(nl_solver._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver._upper_bounds, upper_bounds)
+                assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
+
+                if isinstance(lin_sol, om.LinearBLSQ):
+                    assert_array_equal(nl_solver.linear_solver.lower_bounds, lower_bounds)
+                    assert_array_equal(nl_solver.linear_solver.upper_bounds, upper_bounds)
+
+    def test_set_bounds_multiple_outputs_case_2(self):
+        lower_bounds = np.array([0.0, -1.0, -3.0, -2.0])
+        upper_bounds = np.full(4, np.inf)
+
+        for ls in ls_list:
+            for lin_sol in lin_sol_list:
+                p = om.Problem()
+                p.model.add_subsystem("mult", MultOutComp2(), promotes=["*"])
+                nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=0, solve_subsystems=True)
+                p.model.linear_solver = lin_sol(assemble_jac=True)
+                nl_solver.linesearch = ls()
+                p.setup()
+
+                p.set_val("u1", val=-1.0)
+                p.set_val("u2", val=-0.3)
+                p.set_val("u3", val=-10.0)
+                p.set_val("u4", val=1.0)
+
+                p.run_model()
+
+                assert_array_equal(nl_solver._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver._upper_bounds, upper_bounds)
+                assert_array_equal(nl_solver.linesearch._lower_bounds, lower_bounds)
+                assert_array_equal(nl_solver.linesearch._upper_bounds, upper_bounds)
+
+                if isinstance(lin_sol, om.LinearBLSQ):
+                    assert_array_equal(nl_solver.linear_solver.lower_bounds, lower_bounds)
+                    assert_array_equal(nl_solver.linear_solver.upper_bounds, upper_bounds)
+
+    def test_set_bounds_multiple_outputs_case_3(self):
+        lower_bounds = np.full(4, -np.inf)
+        upper_bounds = np.array([10.0, 5.0, -3.0, 3.0])
+
+        for ls in ls_list:
+            for lin_sol in lin_sol_list:
+                p = om.Problem()
+                p.model.add_subsystem("mult", MultOutComp3(), promotes=["*"])
                 nl_solver = p.model.nonlinear_solver = om.IPNewtonSolver(maxiter=0, solve_subsystems=True)
                 p.model.linear_solver = lin_sol(assemble_jac=True)
                 nl_solver.linesearch = ls()

@@ -2,11 +2,14 @@
 
 
 import scipy
+from scipy.linalg import lu_factor, lu_solve
 from scipy.optimize import lsq_linear
 import numpy as np
 
 from openmdao.utils.array_utils import identity_column_iter
 from openmdao.solvers.solver import BoundedLinearSolver
+from openmdao.solvers.linear.direct import DirectSolver
+from openmdao.matrices.dense_matrix import DenseMatrix
 
 
 def index_to_varname(system, loc):
@@ -163,7 +166,7 @@ def format_nan_error(system, matrix):
     return msg.format(system.msginfo, ", ".join(varnames))
 
 
-class LinearBLSQ(BoundedLinearSolver):
+class LinearBLSQ(DirectSolver, BoundedLinearSolver):
     """
     LinearUserDefined solver.
 
@@ -190,7 +193,7 @@ class LinearBLSQ(BoundedLinearSolver):
         """
         Initialize all attributes.
         """
-        super().__init__(**kwargs)
+        super(LinearBLSQ, self).__init__(**kwargs)
         self.unbounded_step = None
 
     def _declare_options(self):
@@ -205,45 +208,13 @@ class LinearBLSQ(BoundedLinearSolver):
 
         # Use an assembled jacobian by default.
         self.options["assemble_jac"] = True
-
-    def _build_mtx(self):
+    
+    def _linearize(self):
         """
-        Assemble a Jacobian matrix by matrix-vector-product with columns of identity.
-
-        Returns
-        -------
-        ndarray
-            Jacobian matrix.
+        This is needed to prevent the LU factorization (inherited from the DirectSolver) to
+        run every iteration. Instead, it should only run within the solve with the least squares fails.
         """
-        system = self._system()
-        bvec = system._vectors["residual"]["linear"]
-        xvec = system._vectors["output"]["linear"]
-
-        # First make a backup of the vectors
-        b_data = bvec.asarray(copy=True)
-        x_data = xvec.asarray(copy=True)
-
-        nmtx = x_data.size
-        seed = np.zeros(x_data.size)
-        mtx = np.empty((nmtx, nmtx), dtype=b_data.dtype)
-        scope_out, scope_in = system._get_scope()
-
-        # Assemble the Jacobian by running the identity matrix through apply_linear
-        for i, seed in enumerate(identity_column_iter(seed)):
-            # set value of x vector to provided value
-            xvec.set_val(seed)
-
-            # apply linear
-            system._apply_linear(self._assembled_jac, self._rel_systems, "fwd", scope_out, scope_in)
-
-            # put new value in out_vec
-            mtx[:, i] = bvec.asarray()
-
-        # Restore the backed-up vectors
-        bvec.set_val(b_data)
-        xvec.set_val(x_data)
-
-        return mtx
+        pass
 
     def solve(self, mode, rel_systems=None):
         """
@@ -267,8 +238,13 @@ class LinearBLSQ(BoundedLinearSolver):
         d_outputs = system._vectors["output"]["linear"]
         d_resids = system._vectors["residual"]["linear"]
 
-        x_vec = d_outputs.asarray()
-        b_vec = d_resids.asarray()
+        # Assign x and b vectors based on mode
+        if mode == 'fwd':
+            x_vec = d_outputs.asarray()
+            b_vec = d_resids.asarray()
+        else:  # rev
+            x_vec = d_resids.asarray()
+            b_vec = d_outputs.asarray()
 
         # AssembledJacobians are unscaled
         if self._assembled_jac is not None:
@@ -281,16 +257,32 @@ class LinearBLSQ(BoundedLinearSolver):
                     b_vec,
                     bounds=(self.lower_bounds - u, self.upper_bounds - u),
                     method="trf",
-                    lsmr_max_iter=10,
+                    lsq_solver="lsmr",
+                    lsmr_max_iter=3 * min(mtx.shape),  # more iters needed for ill conditioned problems
                     lsmr_tol=1e-14,
                     verbose=2,
                 )
-                x_vec[:] = opt_result["x"]
-                self.unbounded_step = opt_result["x_unbounded"]
+
         # matrix-vector-product generated jacobians are scaled
         else:
             mtx = self._build_mtx()
             opt_result = lsq_linear(
                 mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=0
             )
+
+        # If the bounded least squares solver fails to converge the least squares
+        # subproblem, use a direct linear solver and scalar bounds enforcement
+        lsmr_exit_flag = opt_result["unbounded_sol"][1]
+        if lsmr_exit_flag > 1:
+            super(LinearBLSQ, self)._linearize()
+            super(LinearBLSQ, self).solve(mode)
+            self.unbounded_step = x_vec
+
+            # Perform scalar bounds enforcement by moving any violating states back within the bounds
+            change_lower = 0.0 if self._lower_bounds is None else np.maximum(x_vec, self._lower_bounds) - x_vec
+            change_upper = 0.0 if self._upper_bounds is None else np.minimum(x_vec, self._upper_bounds) - x_vec
+            x_vec += change_lower + change_upper
+
+        else:
             x_vec[:] = opt_result["x"]
+            self.unbounded_step = opt_result["unbounded_sol"][0]

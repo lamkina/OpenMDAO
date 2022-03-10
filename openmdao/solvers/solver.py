@@ -857,8 +857,8 @@ class BoundedNonlinearSolver(NonlinearSolver):
 
         # Check if the linear solver can handle bounds
         if isinstance(self.linear_solver, BoundedLinearSolver):
-            self.linear_solver.lower_bounds = self._lower_bounds
-            self.linear_solver.upper_bounds = self._upper_bounds
+            self.linear_solver._lower_bounds = self._lower_bounds
+            self.linear_solver._upper_bounds = self._upper_bounds
             if self.linesearch is not None:
                 self.linesearch._do_bounds_enforce = False
 

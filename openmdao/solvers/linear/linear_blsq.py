@@ -255,7 +255,7 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
                 opt_result = lsq_linear(
                     mtx,
                     b_vec,
-                    bounds=(self.lower_bounds - u, self.upper_bounds - u),
+                    bounds=(self._lower_bounds - u, self._upper_bounds - u),
                     method="trf",
                     lsq_solver="lsmr",
                     lsmr_max_iter=3 * min(mtx.shape),  # more iters needed for ill conditioned problems
@@ -267,7 +267,7 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
         else:
             mtx = self._build_mtx()
             opt_result = lsq_linear(
-                mtx, b_vec, bounds=(self.lower_bounds - u, self.upper_bounds - u), method="trf", verbose=0
+                mtx, b_vec, bounds=(self._lower_bounds - u, self._upper_bounds - u), method="trf", verbose=0
             )
 
         # If the bounded least squares solver fails to converge the least squares
@@ -279,8 +279,8 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
             self.unbounded_step = x_vec
 
             # Perform scalar bounds enforcement by moving any violating states back within the bounds
-            change_lower = 0.0 if self._lower_bounds is None else np.maximum(x_vec, self._lower_bounds) - x_vec
-            change_upper = 0.0 if self._upper_bounds is None else np.minimum(x_vec, self._upper_bounds) - x_vec
+            change_lower = 0.0 if self._lower_bounds is None else np.maximum(u + x_vec, self._lower_bounds) - (u + x_vec)
+            change_upper = 0.0 if self._upper_bounds is None else np.minimum(u + x_vec, self._upper_bounds) - (u + x_vec)
             x_vec += change_lower + change_upper
 
         else:

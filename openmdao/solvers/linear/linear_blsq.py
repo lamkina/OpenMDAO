@@ -195,6 +195,8 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
         """
         super(LinearBLSQ, self).__init__(**kwargs)
         self.unbounded_step = None
+        self._lsq_fail_count = 0
+        self._use_direct = False  # will be flipped if _lsq_fail_count reaches lsq_fail_switch
 
     def _declare_options(self):
         """
@@ -204,6 +206,10 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
 
         self.options.declare(
             "err_on_singular", types=bool, default=True, desc="Raise an error if Jacobian is singular."
+        )
+        self.options.declare(
+            "lsq_fail_switch", types=int, default=5,
+            desc="Switch only use direct solves after least squares solver fails this many times in a row"
         )
 
         # Use an assembled jacobian by default.
@@ -215,6 +221,29 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
         run every iteration. Instead, it should only run within the solve with the least squares fails.
         """
         pass
+
+    def _direct_solve(self, mode, x_vec, u):
+        """
+        Calls the DirectSolver's LU linear solver and applies scalar bounds enforcement.
+        Also sets self.unbounded_step to the solution before boundes enforcement is applied.
+
+        Parameters
+        ----------
+        mode : str
+            Derivative mode, can be 'fwd' or 'rev'.
+        x_vec : ndarray
+            Vector of the outputs of the linear system (the x in Ax = b)
+        u : ndarray
+            Vector of system states
+        """
+        super(LinearBLSQ, self)._linearize()
+        super(LinearBLSQ, self).solve(mode)
+        self.unbounded_step = x_vec
+
+        # Perform scalar bounds enforcement by moving any violating states back within the bounds
+        change_lower = 0.0 if self._lower_bounds is None else np.maximum(u + x_vec, self._lower_bounds) - (u + x_vec)
+        change_upper = 0.0 if self._upper_bounds is None else np.minimum(u + x_vec, self._upper_bounds) - (u + x_vec)
+        x_vec += change_lower + change_upper
 
     def solve(self, mode, rel_systems=None):
         """
@@ -246,6 +275,12 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
             x_vec = d_resids.asarray()
             b_vec = d_outputs.asarray()
 
+        # If the least squares solver has failed
+        # too many times, skip it and call direct
+        if self._use_direct:
+            self._direct_solve(mode, x_vec, u)
+            return
+
         # AssembledJacobians are unscaled
         if self._assembled_jac is not None:
             mtx = self._assembled_jac._int_mtx._matrix
@@ -274,15 +309,16 @@ class LinearBLSQ(DirectSolver, BoundedLinearSolver):
         # subproblem, use a direct linear solver and scalar bounds enforcement
         lsmr_exit_flag = opt_result["unbounded_sol"][1]
         if lsmr_exit_flag > 1:
-            super(LinearBLSQ, self)._linearize()
-            super(LinearBLSQ, self).solve(mode)
-            self.unbounded_step = x_vec
-
-            # Perform scalar bounds enforcement by moving any violating states back within the bounds
-            change_lower = 0.0 if self._lower_bounds is None else np.maximum(u + x_vec, self._lower_bounds) - (u + x_vec)
-            change_upper = 0.0 if self._upper_bounds is None else np.minimum(u + x_vec, self._upper_bounds) - (u + x_vec)
-            x_vec += change_lower + change_upper
+            self._direct_solve(mode, x_vec, u)
+            self._lsq_fail_count += 1  # increment failure count
 
         else:
             x_vec[:] = opt_result["x"]
             self.unbounded_step = opt_result["unbounded_sol"][0]
+            self._lsq_fail_count = 0  # success, so reset failure count
+        
+        print(f"Fail count = {self._lsq_fail_count}")
+        
+        # If it has failed too many times in a row, switch to only direct solver
+        if self._lsq_fail_count >= self.options["lsq_fail_switch"]:
+            self._use_direct = True

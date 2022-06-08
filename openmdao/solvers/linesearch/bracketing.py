@@ -95,7 +95,7 @@ class BracketingLS(LinesearchSolver):
                 if t_upper.size > 0:
                     penalty[ub_mask] += self._mu_upper * -np.log(t_upper + 1e-10)
 
-                return np.linalg.norm(resids + resids / np.abs(resids) * penalty)
+                return np.linalg.norm(resids + resids / (np.abs(resids) + 1e-10) * penalty)
 
         # Compute the unpenalized residual norm
         return self._iter_get_norm()

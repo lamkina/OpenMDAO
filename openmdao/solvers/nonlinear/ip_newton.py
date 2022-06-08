@@ -310,8 +310,8 @@ class IPNewtonSolver(BoundedNonlinearSolver):
 
         # d_alpha > 0 means that the state has violated a bound
         # d_alpha < 0 means that the state has not violated a bound
-        d_alpha_lower = t_lower / np.abs(du[lb_mask])
-        d_alpha_upper = t_upper / np.abs(du[ub_mask])
+        d_alpha_lower = t_lower / (np.abs(du[lb_mask]) + 1e-10)
+        d_alpha_upper = t_upper / (np.abs(du[ub_mask]) + 1e-10)
 
         # We want to set all values of d_alpha < 0 to 0 so that the
         # penalty logic and formula won't do anything for those terms
@@ -350,14 +350,14 @@ class IPNewtonSolver(BoundedNonlinearSolver):
 
         if t_lower.size > 0:
             dp_du_arr[self._lower_finite_mask] -= (
-                (r[self._lower_finite_mask] / np.abs(self._r0[self._lower_finite_mask]))
+                (r[self._lower_finite_mask] / (np.abs(self._r0[self._lower_finite_mask]) + 1e-10))
                 * self._mu_lower
                 / (t_lower + 1e-10)
             )
 
         if t_upper.size > 0:
             dp_du_arr[self._upper_finite_mask] += (
-                (r[self._upper_finite_mask] / np.abs(self._r0[self._upper_finite_mask]))
+                (r[self._upper_finite_mask] / (np.abs(self._r0[self._upper_finite_mask]) + 1e-10))
                 * self._mu_upper
                 / (t_upper + 1e-10)
             )

@@ -14,11 +14,7 @@ _full_slice = slice(None)
 _flat_full_indexer = indexer(_full_slice, flat_src=True)
 _full_indexer = indexer(_full_slice, flat_src=False)
 
-_type_map = {
-    'input': 'input',
-    'output': 'output',
-    'residual': 'output'
-}
+_type_map = {"input": "input", "output": "output", "residual": "output"}
 
 
 class Vector(object):
@@ -126,19 +122,23 @@ class Vector(object):
         self._alloc_complex = alloc_complex
         self._under_complex_step = False
 
-        self._do_scaling = ((kind == 'input' and system._has_input_scaling) or
-                            (kind == 'output' and system._has_output_scaling) or
-                            (kind == 'residual' and system._has_resid_scaling))
-        self._do_adder = ((kind == 'input' and system._has_input_adder) or
-                          (kind == 'output' and system._has_output_adder) or
-                          (kind == 'residual' and system._has_resid_scaling))
+        self._do_scaling = (
+            (kind == "input" and system._has_input_scaling)
+            or (kind == "output" and system._has_output_scaling)
+            or (kind == "residual" and system._has_resid_scaling)
+        )
+        self._do_adder = (
+            (kind == "input" and system._has_input_adder)
+            or (kind == "output" and system._has_output_adder)
+            or (kind == "residual" and system._has_resid_scaling)
+        )
 
         self._scaling = None
         self._scaling_nl_vec = None
 
         # If we define 'ref' on an output, then we will need to allocate a separate scaling ndarray
         # for the linear and nonlinear input vectors.
-        self._has_solver_ref = system._has_output_scaling and kind == 'input' and name == 'linear'
+        self._has_solver_ref = system._has_output_scaling and kind == "input" and name == "linear"
 
         if root_vector is None:
             self._root_vector = self
@@ -262,7 +262,7 @@ class Vector(object):
         system = self._system()
 
         # try relative name first
-        abs_name = system.pathname + '.' + name if system.pathname else name
+        abs_name = system.pathname + "." + name if system.pathname else name
         if abs_name in self._views:
             return abs_name
 
@@ -423,8 +423,7 @@ class Vector(object):
         root_vector : <Vector> or None
             the root's vector instance or None, if we are at the root.
         """
-        raise NotImplementedError('_initialize_data not defined for vector type '
-                                  f'{type(self).__name__}')
+        raise NotImplementedError("_initialize_data not defined for vector type " f"{type(self).__name__}")
 
     def _initialize_views(self):
         """
@@ -432,8 +431,7 @@ class Vector(object):
 
         Must be implemented by the subclass.
         """
-        raise NotImplementedError('_initialize_views not defined for vector type '
-                                  f'{type(self).__name__}')
+        raise NotImplementedError("_initialize_views not defined for vector type " f"{type(self).__name__}")
 
     def __iadd__(self, vec):
         """
@@ -446,7 +444,7 @@ class Vector(object):
         vec : <Vector>
             vector to add to self.
         """
-        raise NotImplementedError(f'__iadd__ not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"__iadd__ not defined for vector type {type(self).__name__}")
 
     def __isub__(self, vec):
         """
@@ -459,7 +457,7 @@ class Vector(object):
         vec : <Vector>
             vector to subtract from self.
         """
-        raise NotImplementedError(f'__isub__ not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"__isub__ not defined for vector type {type(self).__name__}")
 
     def __imul__(self, val):
         """
@@ -472,7 +470,7 @@ class Vector(object):
         val : int or float
             scalar to multiply self.
         """
-        raise NotImplementedError(f'__imul__ not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"__imul__ not defined for vector type {type(self).__name__}")
 
     def add_scal_vec(self, val, vec):
         """
@@ -487,8 +485,7 @@ class Vector(object):
         vec : <Vector>
             This vector times val is added to self.
         """
-        raise NotImplementedError('add_scale_vec not defined for vector type '
-                                  f'{ype(self).__name__}')
+        raise NotImplementedError("add_scale_vec not defined for vector type " f"{type(self).__name__}")
 
     def asarray(self, copy=False):
         """
@@ -506,7 +503,7 @@ class Vector(object):
         ndarray
             Array representation of this vector.
         """
-        raise NotImplementedError(f'asarray not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"asarray not defined for vector type {type(self).__name__}")
         return None  # silence lint warning
 
     def iscomplex(self):
@@ -520,7 +517,7 @@ class Vector(object):
         bool
             True if this vector contains complex values.
         """
-        raise NotImplementedError(f'iscomplex not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"iscomplex not defined for vector type {type(self).__name__}")
         return False  # silence lint warning
 
     def set_vec(self, vec):
@@ -534,7 +531,7 @@ class Vector(object):
         vec : <Vector>
             The vector whose values self is set to.
         """
-        raise NotImplementedError(f'set_vec not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"set_vec not defined for vector type {type(self).__name__}")
 
     def set_val(self, val, idxs=_full_slice):
         """
@@ -549,7 +546,7 @@ class Vector(object):
         idxs : int or slice or tuple of ints and/or slices
             The locations where the data array should be updated.
         """
-        raise NotImplementedError(f'set_arr not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"set_arr not defined for vector type {type(self).__name__}")
 
     def set_vals(self, vals):
         """
@@ -600,13 +597,14 @@ class Vector(object):
         """
         abs_name = self._name2abs_name(name)
         if abs_name is None:
-            raise KeyError(f"{self._system().msginfo}: Variable name "
-                           f"'{var_name if var_name else name}' not found.")
+            raise KeyError(f"{self._system().msginfo}: Variable name " f"'{var_name if var_name else name}' not found.")
 
         if self.read_only:
-            raise ValueError(f"{self._system().msginfo}: Attempt to set value of "
-                             f"'{var_name if var_name else name}' in "
-                             f"{self._kind} vector when it is read only.")
+            raise ValueError(
+                f"{self._system().msginfo}: Attempt to set value of "
+                f"'{var_name if var_name else name}' in "
+                f"{self._kind} vector when it is read only."
+            )
 
         if idxs is _full_slice:
             if flat:
@@ -637,8 +635,10 @@ class Vector(object):
                 try:
                     value = value.reshape(view[idxs()].shape)
                 except Exception:
-                    raise ValueError(f"{self._system().msginfo}: Failed to set value of "
-                                     f"'{var_name if var_name else name}': {str(err)}.")
+                    raise ValueError(
+                        f"{self._system().msginfo}: Failed to set value of "
+                        f"'{var_name if var_name else name}': {str(err)}."
+                    )
                 view[idxs()] = value
 
     def dot(self, vec):
@@ -652,7 +652,7 @@ class Vector(object):
         vec : <Vector>
             The incoming vector being dotted with self.
         """
-        raise NotImplementedError(f'dot not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"dot not defined for vector type {type(self).__name__}")
 
     def get_norm(self):
         """
@@ -665,15 +665,14 @@ class Vector(object):
         float
             Norm of this vector.
         """
-        raise NotImplementedError(f'get_norm not defined for vector type {type(self).__name__}')
+        raise NotImplementedError(f"get_norm not defined for vector type {type(self).__name__}")
         return None  # silence lint warning about missing return value.
 
     def _in_matvec_context(self):
         """
         Return True if this vector is inside of a matvec_context.
         """
-        raise NotImplementedError('_in_matvec_context not defined for vector type '
-                                  f'{type(self).__name__}')
+        raise NotImplementedError("_in_matvec_context not defined for vector type " f"{type(self).__name__}")
 
     def set_complex_step_mode(self, active):
         """
@@ -700,5 +699,5 @@ class Vector(object):
         str
             The hash string.
         """
-        raise NotImplementedError(f'get_hash not defined for vector type {type(self).__name__}')
-        return ''  # silence lint warning about missing return value.
+        raise NotImplementedError(f"get_hash not defined for vector type {type(self).__name__}")
+        return ""  # silence lint warning about missing return value.

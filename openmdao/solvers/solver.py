@@ -6,6 +6,7 @@ import pprint
 import re
 import sys
 import weakref
+from copy import deepcopy
 
 import numpy as np
 
@@ -588,27 +589,38 @@ class NonlinearSolver(Solver):
         """
         Run the solver.
         """
+        # The state caching only works if we throw an error on non-convergence, otherwise
+        # the solver will disregard the state caching options and throw a warning.
+        if self.options["use_cached_states"] and not self.options["err_on_non_converge"]:
+            msg = "Caching states does nothing unless option 'err_on_non_converge' is set to 'True'"
+            issue_warning(msg, category=SolverWarning)
+
+        # Get the system for this solver
         system = self._system()
         try:
+
+            # print(system._subsystems_allprocs)
             # If we have a previous solver failure, we want to replace
             # the states using the cache.
             if self._prev_fail and self.options["use_cached_states"]:
-                # TODO: AL, Add masks to not overwrite DV's when we replace the states
-                dvs = system._design_vars
-                system._inputs = self._state_cache["inputs"]
-                system._outputs = self._state_cache["outputs"]
+                system._outputs.set_vec(self._state_cache["outputs"])
 
+            # Run the solver
             self._solve()
 
             # If we make it here, the solver didn't throw an exception so there
             # was either convergence or a stall.  Either way, the solver didn't
             # fail so we can set the flag to False.
-            self._prev_fail = False
+            if (
+                self.options["use_cached_states"]
+                and not system.under_complex_step
+                and not system.under_finite_difference
+                and not system.under_approx
+            ):
+                self._prev_fail = False
 
-            # Save the states upon a successful solve
-            if self.options["use_cached_states"]:
-                self._state_cache["inputs"] = system._inputs._copy_views()
-                self._state_cache["outputs"] = system._outputs._copy_views()
+                # Save the states upon a successful solve
+                self._state_cache["outputs"] = deepcopy(system._outputs)
 
         except Exception as err:
             # The solver failed so we need to set the flag to True

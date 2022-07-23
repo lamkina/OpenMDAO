@@ -548,7 +548,7 @@ class NonlinearSolver(Solver):
         """
         super().__init__(**kwargs)
         self._err_cache = OrderedDict()
-        self._state_cache = OrderedDict()
+        self._output_cache = OrderedDict()
         self._prev_fail = False
 
     def _declare_options(self):
@@ -598,12 +598,10 @@ class NonlinearSolver(Solver):
         # Get the system for this solver
         system = self._system()
         try:
-
-            # print(system._subsystems_allprocs)
             # If we have a previous solver failure, we want to replace
             # the states using the cache.
             if self._prev_fail and self.options["use_cached_states"]:
-                system._outputs.set_vec(self._state_cache["outputs"])
+                system._outputs.set_vec(self._output_cache["outputs"])
 
             # Run the solver
             self._solve()
@@ -620,7 +618,7 @@ class NonlinearSolver(Solver):
                 self._prev_fail = False
 
                 # Save the states upon a successful solve
-                self._state_cache["outputs"] = deepcopy(system._outputs)
+                self._output_cache["outputs"] = deepcopy(system._outputs)
 
         except Exception as err:
             # The solver failed so we need to set the flag to True
